@@ -185,6 +185,68 @@ class PerspectiveMemoryProvider(MemoryProvider):
         """Return empty list — this is a context-only provider with no tools."""
         return []
 
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in memory writes to Perspective."""
+        if not self._active or self._engine is None:
+            return
+        try:
+            if action == "remove":
+                return  # No delete support from memory tool yet
+            tags = [f"memory:{target}", f"action:{action}"]
+            if metadata and metadata.get("write_origin"):
+                tags.append(f"origin:{metadata['write_origin']}")
+            self._engine.store(
+                tenant_id=self._tenant_id,
+                content=content,
+                memory_type="semantic",
+                tags=tags,
+            )
+        except Exception as exc:
+            logger.debug("Perspective on_memory_write failed: %s", exc)
+
+    def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        """Store delegation task/result as episodic memory."""
+        if not self._active or self._engine is None:
+            return
+        try:
+            self._engine.store(
+                tenant_id=self._tenant_id,
+                content=f"Delegated task: {task}\nResult: {result[:500]}",
+                memory_type="episodic",
+                tags=["role:delegation", f"child:{child_session_id}"],
+            )
+        except Exception as exc:
+            logger.debug("Perspective on_delegation failed: %s", exc)
+
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Extract insights from messages about to be compressed."""
+        if not self._active or self._engine is None:
+            return ""
+        # Store the compressed messages as episodic memory
+        try:
+            summary_parts = []
+            for msg in messages[-5:]:  # Last 5 messages
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                if isinstance(content, str) and content:
+                    summary_parts.append(f"{role}: {content[:200]}")
+            if summary_parts:
+                self._engine.store(
+                    tenant_id=self._tenant_id,
+                    content="\n".join(summary_parts),
+                    memory_type="episodic",
+                    tags=["role:compression"],
+                )
+        except Exception:
+            pass
+        return ""
+
     def shutdown(self) -> None:
         """Clean shutdown."""
         self._active = False
