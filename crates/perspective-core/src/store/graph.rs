@@ -169,13 +169,96 @@ impl GraphStore {
         Ok(graph.edge_weights().cloned().collect())
     }
 
+    /// Find an Entity or Concept node by name within a tenant.
+    pub fn find_entity_by_name(&self, tenant_id: &str, name: &str) -> Result<Option<GraphNode>> {
+        let graph = self.load_graph(tenant_id)?;
+        let lower = name.to_lowercase();
+        for node in graph.node_weights() {
+            match node {
+                GraphNode::Entity { name: n, .. } | GraphNode::Concept { label: n, .. } => {
+                    if n.to_lowercase() == lower {
+                        return Ok(Some(node.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
+    /// Find or create an Entity node by name. Returns (node_id, is_new).
+    pub fn upsert_entity(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        entity_type: crate::types::EntityType,
+    ) -> Result<(Uuid, bool)> {
+        if let Some(existing) = self.find_entity_by_name(tenant_id, name)? {
+            return Ok((existing.id(), false));
+        }
+        let id = Uuid::new_v4();
+        let node = GraphNode::Entity {
+            id,
+            name: name.to_string(),
+            entity_type,
+        };
+        self.save_node(tenant_id, &node)?;
+        Ok((id, true))
+    }
+
+    /// Find or create a Concept node by label. Returns (node_id, is_new).
+    pub fn upsert_concept(&self, tenant_id: &str, label: &str) -> Result<(Uuid, bool)> {
+        if let Some(existing) = self.find_entity_by_name(tenant_id, label)? {
+            return Ok((existing.id(), false));
+        }
+        let id = Uuid::new_v4();
+        let node = GraphNode::Concept {
+            id,
+            label: label.to_string(),
+        };
+        self.save_node(tenant_id, &node)?;
+        Ok((id, true))
+    }
+
+    /// Check if an edge already exists between two nodes.
+    pub fn edge_exists(&self, tenant_id: &str, from_id: Uuid, to_id: Uuid) -> Result<bool> {
+        let graph = self.load_graph(tenant_id)?;
+        let from_str = from_id.to_string();
+        let to_str = to_id.to_string();
+        for node_idx in graph.node_indices() {
+            let node = &graph[node_idx];
+            if node.id().to_string() == from_str {
+                for edge_ref in graph.edges(node_idx) {
+                    let target = &graph[edge_ref.target()];
+                    if target.id().to_string() == to_str {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Save an edge only if it doesn't already exist.
+    pub fn save_edge_if_new(&self, tenant_id: &str, edge: &GraphEdge) -> Result<()> {
+        if self.edge_exists(tenant_id, edge.from_id, edge.to_id)? {
+            return Ok(());
+        }
+        self.save_edge(tenant_id, edge)
+    }
+
     /// Count all nodes and edges across all tenants. Returns (node_count, edge_count, nodes, edges).
     pub fn count_all(&self) -> Result<(u64, u64, Vec<GraphNode>, Vec<GraphEdge>)> {
-        let txn = self.db.begin_read().map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
 
         let mut all_nodes = Vec::new();
         if let Ok(table) = txn.open_table(NODES_TABLE) {
-            let iter = table.iter().map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+            let iter = table
+                .iter()
+                .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
             for item in iter {
                 let (_, val) = item.map_err(|e| PerspectiveError::Graph(e.to_string()))?;
                 let data: GraphNode = bincode::deserialize(val.value())
@@ -186,7 +269,9 @@ impl GraphStore {
 
         let mut all_edges = Vec::new();
         if let Ok(table) = txn.open_table(EDGES_TABLE) {
-            let iter = table.iter().map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+            let iter = table
+                .iter()
+                .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
             for item in iter {
                 let (_, val) = item.map_err(|e| PerspectiveError::Graph(e.to_string()))?;
                 let stored: StoredEdge = bincode::deserialize(val.value())

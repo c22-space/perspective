@@ -99,8 +99,17 @@ class PerspectiveMemoryProvider(MemoryProvider):
             # Find dashboard_dist relative to this plugin file
             plugin_dir = Path(__file__).parent
             dist_dir = str(plugin_dir / "dashboard_dist")
+
+            # Extraction config
+            extraction_endpoint = config.get("extraction_endpoint")
+            extraction_model = config.get("extraction_model")
+            extraction_api_key = config.get("extraction_api_key")
+            extraction_enabled = config.get("extraction_enabled")
+
             self._engine = PerspectiveEngine(
-                data_dir, dashboard_port, dist_dir
+                data_dir, dashboard_port, dist_dir,
+                extraction_endpoint, extraction_model,
+                extraction_api_key, extraction_enabled,
             )
             self._active = True
             logger.debug(
@@ -315,6 +324,26 @@ class PerspectiveMemoryProvider(MemoryProvider):
             {
                 "key": "dashboard_port",
                 "description": "Port for the dashboard HTTP server (None = disabled)",
+                "default": None,
+            },
+            {
+                "key": "extraction_enabled",
+                "description": "Enable LLM fact extraction pipeline",
+                "default": True,
+            },
+            {
+                "key": "extraction_endpoint",
+                "description": "OpenAI-compatible chat completion endpoint URL",
+                "default": "http://localhost:11434/v1",
+            },
+            {
+                "key": "extraction_model",
+                "description": "LLM model name for extraction",
+                "default": "llama3",
+            },
+            {
+                "key": "extraction_api_key",
+                "description": "API key for the extraction endpoint (optional)",
                 "default": None,
             },
         ]

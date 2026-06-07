@@ -87,6 +87,7 @@ impl PerspectiveProvider {
             metadata: meta_map,
             context,
             source_session: Some(session_id.to_string()),
+            skip_extraction: false,
         };
 
         let id = self.engine.store(req).await?;

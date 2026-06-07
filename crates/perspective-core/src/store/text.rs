@@ -104,19 +104,26 @@ impl TextStore {
         let mut results = Vec::new();
         for (_score, doc_addr) in top_docs {
             if let Ok(doc) = searcher.doc::<tantivy::TantivyDocument>(doc_addr) {
-                let id = doc.get_first(self.id_field)
+                let id = doc
+                    .get_first(self.id_field)
                     .and_then(|v| v.as_str())
                     .and_then(|s| Uuid::parse_str(s).ok());
-                let content = doc.get_first(self.content_field)
+                let content = doc
+                    .get_first(self.content_field)
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let tenant = doc.get_first(self.tenant_field)
+                let tenant = doc
+                    .get_first(self.tenant_field)
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 if let Some(id) = id {
-                    results.push(FullTextResult { id, content, tenant });
+                    results.push(FullTextResult {
+                        id,
+                        content,
+                        tenant,
+                    });
                 }
             }
         }

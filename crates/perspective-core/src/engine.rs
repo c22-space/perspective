@@ -2,6 +2,10 @@ use crate::config::Config;
 use crate::embedding::Embedder;
 use crate::embedding::LocalEmbedder;
 use crate::error::{PerspectiveError, Result};
+use crate::extraction::batcher::ExtractionBatcher;
+use crate::extraction::entities::extract_entities;
+use crate::extraction::pipeline::ExtractionPipeline;
+use crate::extraction::relations::extract_relations;
 use crate::monitor::*;
 use crate::store::graph::GraphStore;
 use crate::store::text::TextStore;
@@ -19,6 +23,8 @@ pub struct PerspectiveEngine {
     text_store: Arc<TextStore>,
     embedder: Arc<dyn Embedder>,
     pub monitor: Arc<Monitor>,
+    extraction_pipeline: Option<Arc<ExtractionPipeline>>,
+    batcher: Mutex<ExtractionBatcher>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +42,8 @@ pub struct StoreRequest {
     pub metadata: std::collections::HashMap<String, serde_json::Value>,
     pub context: Option<String>,
     pub source_session: Option<String>,
+    /// When true, skip extraction (used for internally-generated memories).
+    pub skip_extraction: bool,
 }
 
 impl PerspectiveEngine {
@@ -69,6 +77,14 @@ impl PerspectiveEngine {
 
         let monitor = Arc::new(Monitor::new(&config.storage.data_dir));
 
+        // Initialize extraction pipeline
+        let extraction_pipeline = if config.extraction.enabled {
+            Some(Arc::new(ExtractionPipeline::new(config.extraction.clone())))
+        } else {
+            None
+        };
+        let batcher = ExtractionBatcher::new(&config.extraction);
+
         Ok(Self {
             config,
             vector_store,
@@ -76,6 +92,8 @@ impl PerspectiveEngine {
             text_store,
             embedder,
             monitor,
+            extraction_pipeline,
+            batcher: Mutex::new(batcher),
         })
     }
 
@@ -84,9 +102,14 @@ impl PerspectiveEngine {
     pub fn new_readonly(config: Config) -> Result<Self> {
         let embedder: Arc<dyn Embedder> = match &config.embedding {
             crate::config::EmbeddingConfig::Local { model } => Arc::new(LocalEmbedder::new(model)?),
-            crate::config::EmbeddingConfig::Api { endpoint, model, api_key: _ } => {
+            crate::config::EmbeddingConfig::Api {
+                endpoint,
+                model,
+                api_key: _,
+            } => {
                 return Err(PerspectiveError::Config(format!(
-                    "API embeddings not yet implemented (endpoint: {}, model: {})", endpoint, model
+                    "API embeddings not yet implemented (endpoint: {}, model: {})",
+                    endpoint, model
                 )));
             }
         };
@@ -109,6 +132,13 @@ impl PerspectiveEngine {
 
         let monitor = Arc::new(Monitor::new(&config.storage.data_dir));
 
+        let extraction_pipeline = if config.extraction.enabled {
+            Some(Arc::new(ExtractionPipeline::new(config.extraction.clone())))
+        } else {
+            None
+        };
+        let batcher = ExtractionBatcher::new(&config.extraction);
+
         Ok(Self {
             config,
             vector_store,
@@ -116,6 +146,8 @@ impl PerspectiveEngine {
             text_store,
             embedder,
             monitor,
+            extraction_pipeline,
+            batcher: Mutex::new(batcher),
         })
     }
 
@@ -256,6 +288,88 @@ impl PerspectiveEngine {
             Some(&req.content),
             true,
         );
+
+        // --- Async extraction: entities, relations, LLM facts ---
+        // Local extraction (fast, no network) runs inline.
+        // LLM extraction is buffered and processed by start_extraction_loop().
+        // Skip extraction for internally-generated memories (extracted facts).
+        if !req.skip_extraction {
+            if let Some(ref gs) = self.graph_store {
+                let content = req.content.clone();
+                let tenant = req.tenant_id.clone();
+                let memory_id = id;
+
+                // 1. Extract entities locally
+                let entities = extract_entities(&content);
+
+                // 2. Extract relations locally
+                let relations = extract_relations(&content, &entities);
+
+                // 3. Create Entity/Concept nodes + edges in graph
+                for ent in &entities {
+                    if let Ok((entity_id, _is_new)) =
+                        gs.upsert_entity(&tenant, &ent.name, ent.entity_type)
+                    {
+                        // Link memory -> entity
+                        let edge = GraphEdge {
+                            from_id: memory_id,
+                            to_id: entity_id,
+                            edge_type: EdgeType::Entity,
+                            weight: ent.confidence,
+                            created_at: now,
+                            last_reinforced: now,
+                            decay_rate: 0.01,
+                        };
+                        let _ = gs.save_edge_if_new(&tenant, &edge);
+                    }
+                }
+
+                // 4. Create relation edges
+                for rel in &relations {
+                    // Find or create subject entity
+                    if let Ok((subj_id, _)) =
+                        gs.upsert_entity(&tenant, &rel.subject, crate::types::EntityType::Custom)
+                    {
+                        // Find or create object entity
+                        if let Ok((obj_id, _)) =
+                            gs.upsert_entity(&tenant, &rel.object, crate::types::EntityType::Custom)
+                        {
+                            let edge = GraphEdge {
+                                from_id: subj_id,
+                                to_id: obj_id,
+                                edge_type: EdgeType::Semantic,
+                                weight: rel.confidence,
+                                created_at: now,
+                                last_reinforced: now,
+                                decay_rate: 0.01,
+                            };
+                            let _ = gs.save_edge_if_new(&tenant, &edge);
+                        }
+                    }
+                }
+
+                self.monitor.record_event(
+                    "extraction",
+                    Some("local"),
+                    Some(&format!(
+                        "{} entities, {} relations",
+                        entities.len(),
+                        relations.len()
+                    )),
+                    true,
+                );
+            }
+
+            // 5. Buffer for LLM extraction (processed by start_extraction_loop)
+            if self.config.extraction.enabled && self.extraction_pipeline.is_some() {
+                let pipeline = self.extraction_pipeline.as_ref().unwrap();
+                if pipeline.is_memorable(&req.content) {
+                    if let Ok(mut batcher) = self.batcher.lock() {
+                        batcher.buffer(&req.content);
+                    }
+                }
+            }
+        } // end skip_extraction guard
 
         Ok(id)
     }
@@ -511,7 +625,8 @@ impl PerspectiveEngine {
         }
 
         // Count edge types
-        let mut edge_types: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let mut edge_types: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
         for edge in &edges {
             let name = format!("{:?}", edge.edge_type);
             *edge_types.entry(name).or_insert(0) += 1;
@@ -520,15 +635,17 @@ impl PerspectiveEngine {
         // Recent edges (last 10)
         let mut sorted_edges = edges.clone();
         sorted_edges.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        let recent_edges: Vec<RecentEdge> = sorted_edges.into_iter().take(10).map(|e| {
-            RecentEdge {
+        let recent_edges: Vec<RecentEdge> = sorted_edges
+            .into_iter()
+            .take(10)
+            .map(|e| RecentEdge {
                 created_at: Some(e.created_at),
                 edge_type: format!("{:?}", e.edge_type),
                 from_id: e.from_id.to_string(),
                 to_id: e.to_id.to_string(),
                 weight: e.weight,
-            }
-        }).collect();
+            })
+            .collect();
 
         // Average connectivity (edges per node)
         let avg_connectivity = if total_nodes > 0 {
@@ -677,12 +794,7 @@ impl PerspectiveEngine {
     /// List memories from the vector store for a tenant.
     /// Used by the dashboard /api/memories endpoint.
     /// Searches with a zero vector to retrieve all stored memories.
-    pub fn list_memories(
-        &self,
-        tenant_id: &str,
-        query: &str,
-        limit: usize,
-    ) -> MemoriesResponse {
+    pub fn list_memories(&self, tenant_id: &str, query: &str, limit: usize) -> MemoriesResponse {
         // Use Tantivy for read-only listing (supports concurrent readers)
         let results = if query.is_empty() {
             self.text_store.list_all(limit).unwrap_or_default()
@@ -712,5 +824,115 @@ impl PerspectiveEngine {
             .collect();
 
         MemoriesResponse { memories, total }
+    }
+
+    /// Process a batch of buffered texts through the LLM extraction pipeline.
+    /// Call this periodically (e.g., from a background thread or the extraction loop).
+    /// Returns the number of facts extracted.
+    pub async fn process_extraction_batch(&self) -> Result<usize> {
+        let pipeline = match &self.extraction_pipeline {
+            Some(p) => p,
+            None => return Ok(0),
+        };
+
+        let texts = {
+            let mut batcher = self
+                .batcher
+                .lock()
+                .map_err(|e| PerspectiveError::Config(e.to_string()))?;
+            if !batcher.should_flush() {
+                return Ok(0);
+            }
+            batcher.drain()
+        };
+
+        if texts.is_empty() {
+            return Ok(0);
+        }
+
+        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let facts = pipeline.extract_batch(&refs).await?;
+
+        // Store extracted facts as semantic memories
+        let fact_count = facts.len();
+        for fact in &facts {
+            if fact.confidence < 0.3 {
+                continue;
+            }
+
+            // Store the extracted fact as a semantic memory
+            let store_req = StoreRequest {
+                tenant_id: "default".to_string(),
+                content: fact.fact.clone(),
+                memory_type: MemoryType::Semantic,
+                tags: vec!["extracted".to_string()],
+                metadata: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert(
+                        "source".to_string(),
+                        serde_json::Value::String("extraction".to_string()),
+                    );
+                    m.insert(
+                        "confidence".to_string(),
+                        serde_json::Value::Number(
+                            serde_json::Number::from_f64(fact.confidence as f64)
+                                .unwrap_or_else(|| serde_json::Number::from(0)),
+                        ),
+                    );
+                    m.insert(
+                        "entities".to_string(),
+                        serde_json::Value::Array(
+                            fact.entities
+                                .iter()
+                                .map(|e| serde_json::Value::String(e.clone()))
+                                .collect(),
+                        ),
+                    );
+                    m
+                },
+                context: Some(fact.source_text.clone()),
+                source_session: None,
+                skip_extraction: true,
+            };
+
+            // Store the fact as a semantic memory (skip_extraction prevents infinite loop)
+            let _ = self.store(store_req).await;
+        }
+
+        self.monitor.record_event(
+            "extraction",
+            Some("llm"),
+            Some(&format!("{} facts extracted", fact_count)),
+            true,
+        );
+
+        Ok(fact_count)
+    }
+
+    /// Get the number of memories queued for LLM extraction.
+    pub fn extraction_queue_len(&self) -> usize {
+        self.batcher.lock().map(|b| b.len()).unwrap_or(0)
+    }
+
+    /// Start the background extraction loop.
+    /// Runs every `batch_interval_secs` and processes buffered texts through the LLM.
+    /// Returns a JoinHandle that can be used to stop the loop.
+    pub fn start_extraction_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let interval = std::time::Duration::from_secs(self.config.extraction.batch_interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                match self.process_extraction_batch().await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("Extraction loop: processed {} facts", n);
+                    }
+                    Ok(_) => {} // nothing to process
+                    Err(e) => {
+                        tracing::warn!("Extraction loop error: {}", e);
+                    }
+                }
+            }
+        })
     }
 }
