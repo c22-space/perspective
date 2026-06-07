@@ -1,4 +1,4 @@
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { useStatus, useActivity } from '../hooks';
 
 function formatDuration(secs: number) {
@@ -89,15 +89,27 @@ export default function Overview() {
       {/* Memory type distribution */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
         <h3 className="text-sm font-medium text-zinc-400 mb-3">Memory Distribution</h3>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={typeData}>
-            <XAxis dataKey="type" tick={{ fill: '#a1a1aa', fontSize: 12 }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fill: '#a1a1aa', fontSize: 12 }} axisLine={false} tickLine={false} />
+        <ResponsiveContainer width="100%" height={220}>
+          <PieChart>
+            <Pie
+              data={typeData}
+              dataKey="count"
+              nameKey="type"
+              cx="50%"
+              cy="50%"
+              outerRadius={80}
+              innerRadius={40}
+              paddingAngle={2}
+              label={({ name, percent }: { name?: string; percent?: number }) => `${name ?? ''} ${((percent ?? 0) * 100).toFixed(0)}%`}
+            >
+              {typeData.map((_, i) => (
+                <Cell key={i} fill={['#3b82f6', '#10b981', '#f59e0b'][i % 3]} />
+              ))}
+            </Pie>
             <Tooltip
               contentStyle={{ background: '#18181b', border: '1px solid #27272a', borderRadius: 8, color: '#fff' }}
             />
-            <Bar dataKey="count" fill="#3b82f6" radius={[6, 6, 0, 0]} />
-          </BarChart>
+          </PieChart>
         </ResponsiveContainer>
       </div>
 

@@ -37,8 +37,8 @@ struct PerspectiveEngine {
 #[pymethods]
 impl PerspectiveEngine {
     #[new]
-    #[pyo3(signature = (data_dir, dashboard_port=None))]
-    fn py_new(data_dir: &str, dashboard_port: Option<u16>) -> PyResult<Self> {
+    #[pyo3(signature = (data_dir, dashboard_port=None, dashboard_dist_dir=None))]
+    fn py_new(data_dir: &str, dashboard_port: Option<u16>, dashboard_dist_dir: Option<String>) -> PyResult<Self> {
         let mut config = Config::default();
         config.storage.data_dir = std::path::PathBuf::from(data_dir);
         config.dashboard_port = dashboard_port;
@@ -60,9 +60,9 @@ impl PerspectiveEngine {
         // Start dashboard HTTP server in background thread
         if let Some(port) = config.dashboard_port {
             let engine_clone = Arc::clone(&engine_arc);
-            let data_dir_str = data_dir.to_string();
+            let dist_path = dashboard_dist_dir.clone().unwrap_or_default();
             thread::spawn(move || {
-                if let Err(e) = run_dashboard_server(engine_clone, &data_dir_str, port) {
+                if let Err(e) = run_dashboard_server(engine_clone, &dist_path, port) {
                     eprintln!("Dashboard server error: {e}");
                 }
             });
@@ -219,59 +219,43 @@ impl PerspectiveEngine {
 // Dashboard HTTP server
 // ============================================================================
 
-// Embedded at compile time - the React build output
-const INDEX_HTML: &str = include_str!("../../../dashboard/dist/index.html");
-const FAVICON_SVG: &str = include_str!("../../../dashboard/dist/favicon.svg");
-
-/// Serve a request from the React dist directory (or embedded fallback).
-fn serve_static(dist_dir: &std::path::Path, url: &str) -> Option<(Vec<u8>, &'static str)> {
-    match url {
-        "/" | "/index.html" => Some((INDEX_HTML.as_bytes().to_vec(), "text/html; charset=utf-8")),
-        "/favicon.svg" => Some((FAVICON_SVG.as_bytes().to_vec(), "image/svg+xml")),
-        p if p.starts_with("/assets/") => {
-            let file_path = dist_dir.join(p.trim_start_matches('/'));
-            std::fs::read(&file_path)
-                .ok()
-                .map(|data| {
-                    let ct: &'static str = if p.ends_with(".js") {
-                        "application/javascript"
-                    } else if p.ends_with(".css") {
-                        "text/css"
-                    } else {
-                        "application/octet-stream"
-                    };
-                    (data, ct)
-                })
-        }
-        // SPA fallback for client-side routes
-        _ => Some((INDEX_HTML.as_bytes().to_vec(), "text/html; charset=utf-8")),
+/// Serve a request from the React dist directory (filesystem).
+fn serve_static(dist_dir: &std::path::Path, mut url: &str) -> Option<(Vec<u8>, &'static str)> {
+    let mime = |p: &str| -> &'static str {
+        if p.ends_with(".js") { "application/javascript" }
+        else if p.ends_with(".css") { "text/css" }
+        else if p.ends_with(".svg") { "image/svg+xml" }
+        else if p.ends_with(".html") { "text/html; charset=utf-8" }
+        else if p.ends_with(".json") { "application/json" }
+        else if p.ends_with(".png") { "image/png" }
+        else if p.ends_with(".woff") || p.ends_with(".woff2") { "font/woff2" }
+        else { "application/octet-stream" }
+    };
+    // Try exact file match first
+    if url == "/" { url = "/index.html" }
+    let rel = url.trim_start_matches('/');
+    let file_path = dist_dir.join(rel);
+    if let Ok(data) = std::fs::read(&file_path) {
+        return Some((data, mime(rel)));
     }
+    // SPA fallback: return index.html for non-file routes
+    let index_path = dist_dir.join("index.html");
+    if let Ok(data) = std::fs::read(&index_path) {
+        return Some((data, "text/html; charset=utf-8"));
+    }
+    None
 }
 
 /// Run the dashboard HTTP server using tiny_http.
 fn run_dashboard_server(
     engine: Arc<CoreEngine>,
-    data_dir: &str,
+    dist_dir_arg: &str,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Find the React dist directory
-    let data_path = std::path::PathBuf::from(data_dir);
-    let dist_dir = data_path
-        .parent()
-        .unwrap_or(&data_path)
-        .join("perspective")
-        .join("dashboard")
-        .join("dist");
-
-    // Fallback: relative to the crate source
-    let alt_dist = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("dashboard")
-        .join("dist");
-
-    let serve_dir = if dist_dir.exists() { dist_dir } else if alt_dist.exists() { alt_dist } else {
-        eprintln!("  Dashboard dist not found. Dashboard disabled.");
+    let serve_dir = if !dist_dir_arg.is_empty() {
+        std::path::PathBuf::from(dist_dir_arg)
+    } else {
+        eprintln!("  Dashboard dist not provided. Dashboard disabled.");
         return Ok(());
     };
 

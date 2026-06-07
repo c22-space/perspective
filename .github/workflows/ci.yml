@@ -41,6 +41,7 @@ jobs:
   # build-python:
   #   name: Build Python bindings
   #   runs-on: ubuntu-latest
+  #   needs: [fmt, clippy, test]
   #   steps:
   #     - uses: actions/checkout@v4
   #     - uses: dtolnay/rust-toolchain@stable
@@ -62,8 +63,7 @@ jobs:
   #         from perspective_python import PerspectiveEngine
   #         import tempfile
   #         d = tempfile.mkdtemp()
-  #         e = PerspectiveEngine(d)
-  #         assert e.health(), 'health check failed'
+  #         e = PerspectiveEngine(d, dashboard_port=None)
   #         id1 = e.store('test', 'hello world', 'episodic')
   #         assert id1, 'store returned empty id'
   #         results = e.recall('test', 'hello', budget=5)

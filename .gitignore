@@ -2,3 +2,10 @@ planning
 target/
 .fastembed_cache/
 perspective-data/
+*.so
+*.dylib
+*.dll
+*.whl
+dashboard/dist/
+crates/perspective-python/perspective_python/dashboard_dist/
+plugins/memory/perspective/dashboard_dist/

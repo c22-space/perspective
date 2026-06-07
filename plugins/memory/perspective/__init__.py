@@ -95,7 +95,13 @@ class PerspectiveMemoryProvider(MemoryProvider):
         Path(data_dir).mkdir(parents=True, exist_ok=True)
 
         try:
-            self._engine = PerspectiveEngine(data_dir)
+            dashboard_port = config.get("dashboard_port")
+            # Find dashboard_dist relative to this plugin file
+            plugin_dir = Path(__file__).parent
+            dist_dir = str(plugin_dir / "dashboard_dist")
+            self._engine = PerspectiveEngine(
+                data_dir, dashboard_port, dist_dir
+            )
             self._active = True
             logger.debug(
                 "Perspective initialized: data_dir=%s, tenant=%s, budget=%s",
@@ -305,5 +311,10 @@ class PerspectiveMemoryProvider(MemoryProvider):
                 "key": "budget",
                 "description": "Recall budget (max results)",
                 "default": _DEFAULT_BUDGET,
+            },
+            {
+                "key": "dashboard_port",
+                "description": "Port for the dashboard HTTP server (None = disabled)",
+                "default": None,
             },
         ]
