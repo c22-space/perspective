@@ -1,0 +1,12 @@
+[package]
+name = "perspective-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+perspective-core = { path = "../perspective-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

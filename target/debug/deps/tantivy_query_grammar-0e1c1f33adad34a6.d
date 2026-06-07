@@ -1,0 +1,9 @@
+/home/charlie/perspective/target/debug/deps/tantivy_query_grammar-0e1c1f33adad34a6.d: /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/lib.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/infallible.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/occur.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/query_grammar.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/user_input_ast.rs
+
+/home/charlie/perspective/target/debug/deps/libtantivy_query_grammar-0e1c1f33adad34a6.rmeta: /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/lib.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/infallible.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/occur.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/query_grammar.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/user_input_ast.rs
+
+/home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/lib.rs:
+/home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/infallible.rs:
+/home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/occur.rs:
+/home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/query_grammar.rs:
+/home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-query-grammar-0.22.0/src/user_input_ast.rs:

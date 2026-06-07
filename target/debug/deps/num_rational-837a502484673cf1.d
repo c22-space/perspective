@@ -1,0 +1,6 @@
+/home/charlie/perspective/target/debug/deps/num_rational-837a502484673cf1.d: /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-rational-0.4.2/src/lib.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-rational-0.4.2/src/pow.rs
+
+/home/charlie/perspective/target/debug/deps/libnum_rational-837a502484673cf1.rmeta: /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-rational-0.4.2/src/lib.rs /home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-rational-0.4.2/src/pow.rs
+
+/home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-rational-0.4.2/src/lib.rs:
+/home/charlie/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-rational-0.4.2/src/pow.rs:

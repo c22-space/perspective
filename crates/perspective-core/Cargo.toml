@@ -1,0 +1,21 @@
+[package]
+name = "perspective-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+qdrant-client = "1"
+redb = "2"
+petgraph = "0.6"
+tantivy = "0.22"
+fastembed = "4"
+bincode = "1"

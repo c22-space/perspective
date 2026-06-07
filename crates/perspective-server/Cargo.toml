@@ -1,0 +1,20 @@
+[package]
+name = "perspective-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "perspective"
+path = "src/main.rs"
+
+[dependencies]
+perspective-core = { path = "../perspective-core" }
+tokio.workspace = true
+tonic = "0.12"
+prost = "0.13"
+clap = { version = "4", features = ["derive"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,6 @@
+name: perspective
+version: 0.1.0
+description: "Perspective memory engine for Hermes"
+author: c22
+license: MIT
+memory_provider: true
