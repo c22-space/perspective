@@ -12,6 +12,16 @@ pub enum MemoryType {
     Procedural,
 }
 
+impl std::fmt::Display for MemoryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryType::Episodic => write!(f, "episodic"),
+            MemoryType::Semantic => write!(f, "semantic"),
+            MemoryType::Procedural => write!(f, "procedural"),
+        }
+    }
+}
+
 /// Base fields shared by all memory types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryBase {

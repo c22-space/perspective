@@ -5,6 +5,7 @@ pub mod embedding;
 pub mod engine;
 pub mod error;
 pub mod extraction;
+pub mod monitor;
 pub mod retrieval;
 pub mod store;
 pub mod types;

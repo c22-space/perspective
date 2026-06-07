@@ -1,0 +1,97 @@
+---
+import Dashboard from '../layouts/Dashboard.astro';
+---
+
+<Dashboard title="Config" active="/config">
+  <h1 class="text-2xl font-semibold mb-6">Engine Configuration</h1>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    {/* Storage */}
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <div class="text-sm text-zinc-500 mb-4">Storage</div>
+      <div class="space-y-2 text-sm" id="cfg-storage">
+        <div class="text-zinc-600">Loading...</div>
+      </div>
+    </div>
+
+    {/* Embedding */}
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <div class="text-sm text-zinc-500 mb-4">Embedding</div>
+      <div class="space-y-2 text-sm" id="cfg-embedding">
+        <div class="text-zinc-600">Loading...</div>
+      </div>
+    </div>
+
+    {/* Decay */}
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <div class="text-sm text-zinc-500 mb-4">Decay</div>
+      <div class="space-y-2 text-sm" id="cfg-decay">
+        <div class="text-zinc-600">Loading...</div>
+      </div>
+    </div>
+
+    {/* Retrieval */}
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <div class="text-sm text-zinc-500 mb-4">Retrieval</div>
+      <div class="space-y-2 text-sm" id="cfg-retrieval">
+        <div class="text-zinc-600">Loading...</div>
+      </div>
+    </div>
+
+    {/* Consolidation */}
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <div class="text-sm text-zinc-500 mb-4">Consolidation</div>
+      <div class="space-y-2 text-sm" id="cfg-consolidation">
+        <div class="text-zinc-600">Loading...</div>
+      </div>
+    </div>
+
+    {/* Extraction */}
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <div class="text-sm text-zinc-500 mb-4">Extraction (LLM)</div>
+      <div class="space-y-2 text-sm" id="cfg-extraction">
+        <div class="text-zinc-600">Loading...</div>
+      </div>
+    </div>
+  </div>
+</Dashboard>
+
+<script is:inline>
+  const API = window.__PERSPECTIVE_API__ || 'http://localhost:8080';
+
+  function renderSection(containerId, data) {
+    const el = document.getElementById(containerId);
+    if (!data || Object.keys(data).length === 0) {
+      el.innerHTML = '<div class="text-zinc-600">No configuration</div>';
+      return;
+    }
+    el.innerHTML = Object.entries(data).map(([k, v]) => {
+      const val = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      const color = typeof v === 'boolean' ? (v ? 'text-green-400' : 'text-red-400') : 'text-zinc-200';
+      return `<div class="flex justify-between py-1 border-b border-zinc-800/50">
+        <span class="text-zinc-400">${k.replace(/_/g, ' ')}</span>
+        <span class="${color} font-mono text-xs">${val}</span>
+      </div>`;
+    }).join('');
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch(`${API}/api/config`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+      renderSection('cfg-storage', data.storage);
+      renderSection('cfg-embedding', data.embedding);
+      renderSection('cfg-decay', data.decay);
+      renderSection('cfg-retrieval', data.retrieval);
+      renderSection('cfg-consolidation', data.consolidation);
+      renderSection('cfg-extraction', data.extraction);
+    } catch (e) {
+      ['cfg-storage', 'cfg-embedding', 'cfg-decay', 'cfg-retrieval', 'cfg-consolidation', 'cfg-extraction'].forEach(id => {
+        document.getElementById(id).innerHTML = '<div class="text-zinc-600">Failed to load</div>';
+      });
+    }
+  }
+
+  refresh();
+</script>

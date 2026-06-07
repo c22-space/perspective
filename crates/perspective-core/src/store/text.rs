@@ -29,8 +29,12 @@ impl TextStore {
         let tenant_field = schema_builder.add_text_field("tenant", STRING | STORED);
         let schema = schema_builder.build();
 
-        let index = Index::create_in_dir(path, schema.clone())
-            .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
+        // Try opening existing index first, create if it doesn't exist
+        let index = match Index::open_in_dir(path) {
+            Ok(idx) => idx,
+            Err(_) => Index::create_in_dir(path, schema.clone())
+                .map_err(|e| PerspectiveError::Storage(e.to_string()))?,
+        };
 
         let reader = index
             .reader_builder()
