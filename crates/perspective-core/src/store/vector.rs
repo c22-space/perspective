@@ -51,6 +51,8 @@ impl QdrantVectorStore {
         }
 
         let path = self.shard_path(tenant_id);
+        std::fs::create_dir_all(&path)
+            .map_err(|e| PerspectiveError::Qdrant(format!("Failed to create shard dir: {}", e)))?;
 
         let shard = if path.join("segments").exists() {
             EdgeShard::load(&path, None)
@@ -94,18 +96,18 @@ impl QdrantVectorStore {
     }
 
     pub fn search(
-        &self,
+        &mut self,
         tenant_id: &str,
         query_vector: Vec<f32>,
         limit: usize,
+        dimensions: usize,
     ) -> Result<Vec<SearchResult>> {
         let path = self.shard_path(tenant_id);
         if !path.join("segments").exists() {
             return Ok(vec![]);
         }
 
-        let shard = EdgeShard::load(&path, None)
-            .map_err(|e| PerspectiveError::Qdrant(format!("Failed to load shard: {}", e)))?;
+        let shard = self.get_or_create_shard(tenant_id, dimensions)?;
 
         let search_request = SearchRequest {
             query: query_vector.into(),
@@ -134,14 +136,13 @@ impl QdrantVectorStore {
         }).collect())
     }
 
-    pub fn delete(&self, tenant_id: &str, id: Uuid) -> Result<()> {
+    pub fn delete(&mut self, tenant_id: &str, id: Uuid, dimensions: usize) -> Result<()> {
         let path = self.shard_path(tenant_id);
         if !path.join("segments").exists() {
             return Ok(());
         }
 
-        let shard = EdgeShard::load(&path, None)
-            .map_err(|e| PerspectiveError::Qdrant(format!("Failed to load shard: {}", e)))?;
+        let shard = self.get_or_create_shard(tenant_id, dimensions)?;
 
         let op = PointOperations::DeletePoints {
             ids: vec![uuid_to_point_id(id)],

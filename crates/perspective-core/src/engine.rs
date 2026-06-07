@@ -212,7 +212,7 @@ impl PerspectiveEngine {
 
         let vector_results = self.vector_store.lock()
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
-            .search(tenant_id, query_embedding, overfetch)?;
+            .search(tenant_id, query_embedding, overfetch, self.embedder.dimensions())?;
 
         // 2. Text search (BM25)
         let text_results = self.text_store.search(tenant_id, query, overfetch)?;
@@ -244,7 +244,7 @@ impl PerspectiveEngine {
         for (id, score) in sorted {
             if let Ok(search_results) = self.vector_store.lock()
                 .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
-                .search(tenant_id, vec![0.0; self.embedder.dimensions()], 100)
+                .search(tenant_id, vec![0.0; self.embedder.dimensions()], 100, self.embedder.dimensions())
             {
                 if let Some(sr) = search_results.iter().find(|r| r.id == id) {
                     if let Some(payload) = &sr.payload {
@@ -291,7 +291,7 @@ impl PerspectiveEngine {
     pub async fn get_memory(&self, tenant_id: &str, id: Uuid) -> Result<Memory> {
         let results = self.vector_store.lock()
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
-            .search(tenant_id, vec![0.0; self.embedder.dimensions()], 100)?;
+            .search(tenant_id, vec![0.0; self.embedder.dimensions()], 100, self.embedder.dimensions())?;
 
         for sr in results {
             if sr.id == id {
@@ -330,7 +330,7 @@ impl PerspectiveEngine {
     pub async fn delete_memory(&self, tenant_id: &str, id: Uuid) -> Result<()> {
         self.vector_store.lock()
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
-            .delete(tenant_id, id)?;
+            .delete(tenant_id, id, self.embedder.dimensions())?;
         self.text_store.delete_document(tenant_id, id)?;
         Ok(())
     }
