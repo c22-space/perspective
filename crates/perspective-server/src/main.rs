@@ -32,11 +32,11 @@ enum Commands {
     /// Start the gRPC server and HTTP dashboard
     Serve {
         /// Bind address
-        #[arg(short, long, default_value = "127.0.0.1")]
+        #[arg(long, default_value = "127.0.0.1")]
         host: String,
 
         /// gRPC port
-        #[arg(short, long, default_value = "50051")]
+        #[arg(short = 'p', long, default_value = "50051")]
         port: u16,
 
         /// HTTP dashboard port (0 to disable)
