@@ -17,6 +17,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build dashboard
+        run: |
+          cd dashboard
+          npm ci --silent
+          npm run build
+          # Copy dist into the Python package for maturin to bundle
+          cp -r dist ../crates/perspective-python/perspective_python/dashboard_dist
       - uses: dtolnay/rust-toolchain@stable
       - uses: maturin-build/maturin-action@v1
         with:
