@@ -49,7 +49,9 @@ impl PerspectiveEngine {
     ) -> PyResult<Self> {
         let mut config = Config::default();
         config.storage.data_dir = std::path::PathBuf::from(data_dir);
-        config.dashboard_port = dashboard_port;
+        if let Some(port) = dashboard_port {
+            config.dashboard_port = Some(port);
+        }
 
         // Apply extraction overrides
         if let Some(ep) = extraction_endpoint {
