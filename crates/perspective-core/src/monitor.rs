@@ -130,6 +130,7 @@ pub struct GraphResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoriesResponse {
     pub memories: Vec<MemorySummary>,
+    pub total: u64,
 }
 
 /// Summary of a memory for the dashboard (no embedding data).

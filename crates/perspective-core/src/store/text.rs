@@ -19,6 +19,13 @@ pub struct TextSearchResult {
     pub score: f32,
 }
 
+#[derive(Debug)]
+pub struct FullTextResult {
+    pub id: Uuid,
+    pub content: String,
+    pub tenant: String,
+}
+
 impl TextStore {
     pub fn new(path: &Path) -> Result<Self> {
         std::fs::create_dir_all(path).map_err(|e| PerspectiveError::Storage(e.to_string()))?;
@@ -82,12 +89,46 @@ impl TextStore {
         Ok(())
     }
 
+    pub fn count(&self) -> u64 {
+        let searcher = self.reader.searcher();
+        searcher.num_docs()
+    }
+
+    pub fn list_all(&self, limit: usize) -> Result<Vec<FullTextResult>> {
+        let searcher = self.reader.searcher();
+        let query = tantivy::query::AllQuery;
+        let top_docs = searcher
+            .search(&query, &tantivy::collector::TopDocs::with_limit(limit))
+            .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for (_score, doc_addr) in top_docs {
+            if let Ok(doc) = searcher.doc::<tantivy::TantivyDocument>(doc_addr) {
+                let id = doc.get_first(self.id_field)
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Uuid::parse_str(s).ok());
+                let content = doc.get_first(self.content_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tenant = doc.get_first(self.tenant_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(id) = id {
+                    results.push(FullTextResult { id, content, tenant });
+                }
+            }
+        }
+        Ok(results)
+    }
+
     pub fn search(
         &self,
         tenant_id: &str,
         query_str: &str,
         limit: usize,
-    ) -> Result<Vec<TextSearchResult>> {
+    ) -> Result<Vec<FullTextResult>> {
         let searcher = self.reader.searcher();
 
         let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
@@ -104,7 +145,7 @@ impl TextStore {
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
 
         let mut results = Vec::new();
-        for (score, doc_addr) in top_docs {
+        for (_score, doc_addr) in top_docs {
             if let Ok(doc) = searcher.doc::<tantivy::TantivyDocument>(doc_addr) {
                 let is_tenant = doc
                     .get_first(self.tenant_field)
@@ -113,12 +154,21 @@ impl TextStore {
                     .unwrap_or(false);
 
                 if is_tenant {
-                    if let Some(id_val) = doc.get_first(self.id_field) {
-                        if let Some(id_str) = id_val.as_str() {
-                            if let Ok(id) = Uuid::parse_str(id_str) {
-                                results.push(TextSearchResult { id, score });
-                            }
-                        }
+                    let id = doc
+                        .get_first(self.id_field)
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| Uuid::parse_str(s).ok());
+                    let content = doc
+                        .get_first(self.content_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if let Some(id) = id {
+                        results.push(FullTextResult {
+                            id,
+                            content,
+                            tenant: tenant_id.to_string(),
+                        });
                     }
                 }
             }

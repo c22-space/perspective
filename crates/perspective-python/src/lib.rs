@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::thread;
 
 use ::perspective_core::config::Config;
 use ::perspective_core::engine::{PerspectiveEngine as CoreEngine, StoreRequest};
@@ -25,29 +26,24 @@ struct MemoryResult {
 }
 
 /// Perspective memory engine.
-///
-/// Usage:
-///     engine = PerspectiveEngine(data_dir="/path/to/data")
-///     id = engine.store(tenant_id="my_agent", content="Hello world", memory_type="episodic")
-///     results = engine.recall(tenant_id="my_agent", query="greeting", budget=10)
-///     for r in results:
-///         print(f"{r.content} (score={r.score})")
 #[pyclass]
 struct PerspectiveEngine {
-    inner: CoreEngine,
+    inner: Arc<CoreEngine>,
     runtime: Arc<Runtime>,
+    _data_dir: String,
+    _dashboard_port: Option<u16>,
 }
 
 #[pymethods]
 impl PerspectiveEngine {
-    /// Create a new engine with default config.
     #[new]
-    #[pyo3(signature = (data_dir,))]
-    fn py_new(data_dir: &str) -> PyResult<Self> {
+    #[pyo3(signature = (data_dir, dashboard_port=None))]
+    fn py_new(data_dir: &str, dashboard_port: Option<u16>) -> PyResult<Self> {
         let mut config = Config::default();
         config.storage.data_dir = std::path::PathBuf::from(data_dir);
+        config.dashboard_port = dashboard_port;
 
-        let engine = CoreEngine::new(config).map_err(|e| {
+        let engine = CoreEngine::new(config.clone()).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                 "Failed to create engine: {e}"
             ))
@@ -59,24 +55,28 @@ impl PerspectiveEngine {
             ))
         })?;
 
+        let engine_arc = Arc::new(engine);
+
+        // Start dashboard HTTP server in background thread
+        if let Some(port) = config.dashboard_port {
+            let engine_clone = Arc::clone(&engine_arc);
+            let data_dir_str = data_dir.to_string();
+            thread::spawn(move || {
+                if let Err(e) = run_dashboard_server(engine_clone, &data_dir_str, port) {
+                    eprintln!("Dashboard server error: {e}");
+                }
+            });
+            println!("  Dashboard:    http://127.0.0.1:{port}");
+        }
+
         Ok(Self {
-            inner: engine,
+            inner: engine_arc,
             runtime: Arc::new(runtime),
+            _data_dir: data_dir.to_string(),
+            _dashboard_port: config.dashboard_port,
         })
     }
 
-    /// Store a memory.
-    ///
-    /// Args:
-    ///     tenant_id: Tenant identifier.
-    ///     content: Memory content text.
-    ///     memory_type: "episodic", "semantic", or "procedural".
-    ///     tags: Optional list of tags.
-    ///     context: Optional context string.
-    ///     session_id: Optional session identifier.
-    ///
-    /// Returns:
-    ///     Memory ID as a string.
     #[pyo3(signature = (tenant_id, content, memory_type="episodic", tags=None, context=None, session_id=None))]
     fn store(
         &self,
@@ -91,11 +91,9 @@ impl PerspectiveEngine {
             "episodic" => MemoryType::Episodic,
             "semantic" => MemoryType::Semantic,
             "procedural" => MemoryType::Procedural,
-            _ => {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "Invalid memory_type: {memory_type}. Use 'episodic', 'semantic', or 'procedural'"
-            )))
-            }
+            ))),
         };
 
         let req = StoreRequest {
@@ -108,81 +106,42 @@ impl PerspectiveEngine {
             source_session: session_id,
         };
 
-        let engine = &self.inner;
-        let id = self
-            .runtime
-            .block_on(async { engine.store(req).await })
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Store failed: {e}"))
-            })?;
+        let e = &*self.inner;
+        let id = self.runtime.block_on(async { e.store(req).await })
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Store failed: {e}")))?;
 
         Ok(id.to_string())
     }
 
-    /// Recall relevant memories for a query.
-    ///
-    /// Args:
-    ///     tenant_id: Tenant identifier.
-    ///     query: Search query.
-    ///     budget: Maximum number of results (default: 10).
-    ///
-    /// Returns:
-    ///     List of MemoryResult objects.
     #[pyo3(signature = (tenant_id, query, budget=10))]
     fn recall(&self, tenant_id: &str, query: &str, budget: usize) -> PyResult<Vec<MemoryResult>> {
-        let result = self
-            .runtime
-            .block_on(async { self.inner.recall(tenant_id, query, budget).await })
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Recall failed: {e}"))
-            })?;
+        let e = &*self.inner;
+        let result = self.runtime.block_on(async { e.recall(tenant_id, query, budget).await })
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Recall failed: {e}")))?;
 
         let mut results = Vec::new();
         for (i, memory) in result.memories.iter().enumerate() {
             let score = result.scores.get(i).copied().unwrap_or(0.0);
             let (id, content, mt, tags) = match memory {
                 ::perspective_core::types::Memory::Episodic(e) => (
-                    e.base.id.to_string(),
-                    e.base.content.clone(),
-                    "episodic",
-                    e.base.tags.clone(),
+                    e.base.id.to_string(), e.base.content.clone(), "episodic", e.base.tags.clone(),
                 ),
                 ::perspective_core::types::Memory::Semantic(e) => (
-                    e.base.id.to_string(),
-                    e.base.content.clone(),
-                    "semantic",
-                    e.base.tags.clone(),
+                    e.base.id.to_string(), e.base.content.clone(), "semantic", e.base.tags.clone(),
                 ),
                 ::perspective_core::types::Memory::Procedural(e) => (
-                    e.base.id.to_string(),
-                    e.base.content.clone(),
-                    "procedural",
-                    e.base.tags.clone(),
+                    e.base.id.to_string(), e.base.content.clone(), "procedural", e.base.tags.clone(),
                 ),
             };
             results.push(MemoryResult {
-                id,
-                content,
-                memory_type: mt.to_string(),
-                score,
-                tags,
+                id, content, memory_type: mt.to_string(), score, tags,
             });
         }
-
         Ok(results)
     }
 
-    /// Reflect on a query: recall relevant memories and return them grouped.
-    ///
-    /// Args:
-    ///     tenant_id: Tenant identifier.
-    ///     query: Reflection query.
-    ///
-    /// Returns:
-    ///     Dict with keys "episodic", "semantic", "procedural" containing lists of dicts.
     fn reflect(&self, py: Python<'_>, tenant_id: &str, query: &str) -> PyResult<PyObject> {
         let results = self.recall(tenant_id, query, 20)?;
-
         let dict = PyDict::new(py);
         let episodic = PyList::empty(py);
         let semantic = PyList::empty(py);
@@ -200,48 +159,237 @@ impl PerspectiveEngine {
                 _ => {}
             }
         }
-
         dict.set_item("episodic", &episodic)?;
         dict.set_item("semantic", &semantic)?;
         dict.set_item("procedural", &procedural)?;
-
         Ok(dict.into())
     }
 
-    /// Delete a memory by ID.
     #[pyo3(signature = (tenant_id, memory_id))]
     fn delete(&self, tenant_id: &str, memory_id: &str) -> PyResult<()> {
         let id: uuid::Uuid = memory_id.parse().map_err(|_| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid UUID: {memory_id}"))
         })?;
-
-        self.runtime
-            .block_on(async { self.inner.delete_memory(tenant_id, id).await })
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Delete failed: {e}"))
-            })?;
-
+        let e = &*self.inner;
+        self.runtime.block_on(async { e.delete_memory(tenant_id, id).await })
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Delete failed: {e}")))?;
         Ok(())
     }
 
-    /// Health check.
     fn health(&self) -> PyResult<bool> {
-        let result = self
-            .runtime
-            .block_on(async { self.inner.recall("default", "health_check", 1).await });
+        let e = &*self.inner;
+        let result = self.runtime.block_on(async { e.recall("default", "health_check", 1).await });
         Ok(result.is_ok())
     }
 
-    /// List tenants.
     fn list_tenants(&self) -> PyResult<Vec<String>> {
-        self.runtime
-            .block_on(async { self.inner.list_tenants().await })
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "Failed to list tenants: {e}"
-                ))
-            })
+        let e = &*self.inner;
+        self.runtime.block_on(async { e.list_tenants().await })
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to list tenants: {e}")))
     }
+
+    // --- Dashboard query methods (sync, for HTTP handlers) ---
+
+    fn status_json(&self) -> String {
+        serde_json::to_string(&self.inner.status_response()).unwrap_or_default()
+    }
+
+    fn activity_json(&self, limit: usize) -> String {
+        serde_json::to_string(&self.inner.get_activity(limit)).unwrap_or_default()
+    }
+
+    fn processes_json(&self) -> String {
+        serde_json::to_string(&self.inner.get_processes()).unwrap_or_default()
+    }
+
+    fn graph_json(&self) -> String {
+        serde_json::to_string(&self.inner.get_graph_stats()).unwrap_or_default()
+    }
+
+    fn config_json(&self) -> String {
+        serde_json::to_string(&self.inner.get_config_response()).unwrap_or_default()
+    }
+
+    fn memories_json(&self, tenant_id: &str, query: &str, limit: usize) -> String {
+        serde_json::to_string(&self.inner.list_memories(tenant_id, query, limit)).unwrap_or_default()
+    }
+}
+
+// ============================================================================
+// Dashboard HTTP server
+// ============================================================================
+
+// Embedded at compile time - the React build output
+const INDEX_HTML: &str = include_str!("../../../dashboard/dist/index.html");
+const FAVICON_SVG: &str = include_str!("../../../dashboard/dist/favicon.svg");
+
+/// Serve a request from the React dist directory (or embedded fallback).
+fn serve_static(dist_dir: &std::path::Path, url: &str) -> Option<(Vec<u8>, &'static str)> {
+    match url {
+        "/" | "/index.html" => Some((INDEX_HTML.as_bytes().to_vec(), "text/html; charset=utf-8")),
+        "/favicon.svg" => Some((FAVICON_SVG.as_bytes().to_vec(), "image/svg+xml")),
+        p if p.starts_with("/assets/") => {
+            let file_path = dist_dir.join(p.trim_start_matches('/'));
+            std::fs::read(&file_path)
+                .ok()
+                .map(|data| {
+                    let ct: &'static str = if p.ends_with(".js") {
+                        "application/javascript"
+                    } else if p.ends_with(".css") {
+                        "text/css"
+                    } else {
+                        "application/octet-stream"
+                    };
+                    (data, ct)
+                })
+        }
+        // SPA fallback for client-side routes
+        _ => Some((INDEX_HTML.as_bytes().to_vec(), "text/html; charset=utf-8")),
+    }
+}
+
+/// Run the dashboard HTTP server using tiny_http.
+fn run_dashboard_server(
+    engine: Arc<CoreEngine>,
+    data_dir: &str,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Find the React dist directory
+    let data_path = std::path::PathBuf::from(data_dir);
+    let dist_dir = data_path
+        .parent()
+        .unwrap_or(&data_path)
+        .join("perspective")
+        .join("dashboard")
+        .join("dist");
+
+    // Fallback: relative to the crate source
+    let alt_dist = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("dashboard")
+        .join("dist");
+
+    let serve_dir = if dist_dir.exists() { dist_dir } else if alt_dist.exists() { alt_dist } else {
+        eprintln!("  Dashboard dist not found. Dashboard disabled.");
+        return Ok(());
+    };
+
+    let addr = format!("127.0.0.1:{port}");
+    let server = tiny_http::Server::http(&addr)
+        .map_err(|e| format!("Failed to bind dashboard on {addr}: {e}"))?;
+
+    let cors_headers = [
+        "Access-Control-Allow-Origin: *",
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers: Content-Type",
+    ];
+
+    loop {
+        match server.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(Some(request)) => {
+                let method = request.method().to_string();
+                let url = request.url().to_string();
+
+                // Handle CORS preflight
+                if method == "OPTIONS" {
+                    let mut resp = tiny_http::Response::from_string("").with_status_code(204);
+                    for h in &cors_headers {
+                        resp = resp.with_header(hdr(h));
+                                                }
+                                                let _ = request.respond(resp);
+                    continue;
+                }
+
+                // API routes -> JSON
+                let response_body: serde_json::Value = if url.starts_with("/api/") {
+                    match url.as_str() {
+                        "/api/status" => serde_json::to_value(engine.status_response()).unwrap_or_default(),
+                        "/api/health" => serde_json::json!({"status": "healthy"}),
+                        "/api/processes" => serde_json::to_value(engine.get_processes()).unwrap_or_default(),
+                        "/api/graph" => serde_json::to_value(engine.get_graph_stats()).unwrap_or_default(),
+                        "/api/config" => serde_json::to_value(engine.get_config_response()).unwrap_or_default(),
+                        u if u.starts_with("/api/activity") => {
+                            let limit = parse_qs(&url, "limit", 50usize);
+                            serde_json::to_value(engine.get_activity(limit)).unwrap_or_default()
+                        }
+                        u if u.starts_with("/api/memories") => {
+                            let q = parse_qs_str(&url, "q", "");
+                            let limit = parse_qs(&url, "limit", 50usize);
+                            serde_json::to_value(engine.list_memories("hermes", q, limit)).unwrap_or_default()
+                        }
+                        u if u.starts_with("/api/tenants") => {
+                            serde_json::json!(["hermes"])  // list_tenants is async, use hardcoded for now
+                        }
+                        _ => serde_json::json!({"error": "Not found"}),
+                    }
+                } else {
+                    // Static files
+                    if let Some((data, ct)) = serve_static(&serve_dir, &url) {
+                        let mut resp = tiny_http::Response::from_data(data)
+                            .with_header(hdr(&format!("Content-Type: {ct}")));
+                        for h in &cors_headers {
+                            resp = resp.with_header(hdr(h));
+                        }
+                        let _ = request.respond(resp);
+                        continue;
+                    } else {
+                        let resp = tiny_http::Response::from_string("Not Found").with_status_code(404);
+                        let _ = request.respond(resp);
+                        continue;
+                    }
+                };
+
+                // Send JSON response
+                let json_str = serde_json::to_string(&response_body).unwrap_or_default();
+                let mut resp = tiny_http::Response::from_string(&json_str)
+                    .with_header(hdr("Content-Type: application/json"));
+                for h in &cors_headers {
+                    resp = resp.with_header(hdr(h));
+                }
+                let _ = request.respond(resp);
+            }
+            Ok(None) => continue, // timeout
+            Err(e) => {
+                eprintln!("Dashboard server error: {e}");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a query string parameter as usize.
+fn parse_qs(url: &str, key: &str, default: usize) -> usize {
+    url.split('?')
+        .nth(1)
+        .and_then(|qs| {
+            qs.split('&')
+                .find(|p| p.starts_with(&format!("{key}=")))
+                .and_then(|p| p.split('=').nth(1))
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(default)
+}
+
+/// Build a tiny_http Header from a "Name: Value" string.
+fn hdr(s: &str) -> tiny_http::Header {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    let name = parts[0].trim();
+    let value = if parts.len() > 1 { parts[1].trim() } else { "" };
+    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
+}
+
+/// Parse a query string parameter as &str.
+fn parse_qs_str<'a>(url: &'a str, key: &str, default: &'a str) -> &'a str {
+    url.split('?')
+        .nth(1)
+        .and_then(|qs| {
+            qs.split('&')
+                .find(|p| p.starts_with(&format!("{key}=")))
+                .and_then(|p| p.split('=').nth(1))
+        })
+        .unwrap_or(default)
 }
 
 /// Perspective memory engine Python module.

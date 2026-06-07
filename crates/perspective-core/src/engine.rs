@@ -15,7 +15,7 @@ use uuid::Uuid;
 pub struct PerspectiveEngine {
     pub config: Config,
     vector_store: Mutex<QdrantVectorStore>,
-    graph_store: Arc<GraphStore>,
+    graph_store: Option<Arc<GraphStore>>,
     text_store: Arc<TextStore>,
     embedder: Arc<dyn Embedder>,
     pub monitor: Arc<Monitor>,
@@ -64,6 +64,46 @@ impl PerspectiveEngine {
         let graph_store = Arc::new(GraphStore::new(&graph_path)?);
 
         // Initialize text store
+        let text_path = config.storage.data_dir.join("tantivy");
+        let text_store = Arc::new(TextStore::new(&text_path)?);
+
+        let monitor = Arc::new(Monitor::new(&config.storage.data_dir));
+
+        Ok(Self {
+            config,
+            vector_store,
+            graph_store: Some(graph_store),
+            text_store,
+            embedder,
+            monitor,
+        })
+    }
+
+    /// Create engine for dashboard read-only mode.
+    /// Skips graph store if redb is locked by another process.
+    pub fn new_readonly(config: Config) -> Result<Self> {
+        let embedder: Arc<dyn Embedder> = match &config.embedding {
+            crate::config::EmbeddingConfig::Local { model } => Arc::new(LocalEmbedder::new(model)?),
+            crate::config::EmbeddingConfig::Api { endpoint, model, api_key: _ } => {
+                return Err(PerspectiveError::Config(format!(
+                    "API embeddings not yet implemented (endpoint: {}, model: {})", endpoint, model
+                )));
+            }
+        };
+
+        let qdrant_path = config.storage.data_dir.join("qdrant");
+        let vector_store = Mutex::new(QdrantVectorStore::new(&qdrant_path)?);
+
+        // Skip graph store if redb is locked by another process (e.g. Hermes plugin)
+        let graph_path = config.storage.data_dir.join("graph.redb");
+        let graph_store = match GraphStore::new(&graph_path) {
+            Ok(gs) => Some(Arc::new(gs)),
+            Err(e) => {
+                eprintln!("  ⚠ Graph store unavailable (locked?): {e}. Dashboard will show graph as empty.");
+                None
+            }
+        };
+
         let text_path = config.storage.data_dir.join("tantivy");
         let text_store = Arc::new(TextStore::new(&text_path)?);
 
@@ -179,34 +219,36 @@ impl PerspectiveEngine {
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
             .upsert(&req.tenant_id, id, embedding, payload, dims)?;
 
-        // Store in graph
-        self.graph_store.save_node(
-            &req.tenant_id,
-            &GraphNode::MemoryRef {
-                id,
-                memory_type: req.memory_type,
-            },
-        )?;
+        // Store in graph (skip if unavailable)
+        if let Some(ref gs) = self.graph_store {
+            gs.save_node(
+                &req.tenant_id,
+                &GraphNode::MemoryRef {
+                    id,
+                    memory_type: req.memory_type,
+                },
+            )?;
+
+            // Create temporal edge to most recent memory of same type
+            if let Ok(neighbors) = gs.get_neighbors(&req.tenant_id, id, None) {
+                if let Some((last_node, _)) = neighbors.last() {
+                    let edge = GraphEdge {
+                        from_id: id,
+                        to_id: last_node.id(),
+                        edge_type: EdgeType::Temporal,
+                        weight: 0.8,
+                        created_at: now,
+                        last_reinforced: now,
+                        decay_rate: self.config.decay.episodic_lambda,
+                    };
+                    gs.save_edge(&req.tenant_id, &edge)?;
+                }
+            }
+        }
 
         // Store in text index
         self.text_store
             .add_document(&req.tenant_id, id, &req.content)?;
-
-        // Create temporal edge to most recent memory of same type
-        if let Ok(neighbors) = self.graph_store.get_neighbors(&req.tenant_id, id, None) {
-            if let Some((last_node, _)) = neighbors.last() {
-                let edge = GraphEdge {
-                    from_id: id,
-                    to_id: last_node.id(),
-                    edge_type: EdgeType::Temporal,
-                    weight: 0.8,
-                    created_at: now,
-                    last_reinforced: now,
-                    decay_rate: self.config.decay.episodic_lambda,
-                };
-                self.graph_store.save_edge(&req.tenant_id, &edge)?;
-            }
-        }
 
         self.monitor.record_event(
             "store",
@@ -407,19 +449,8 @@ impl PerspectiveEngine {
         let gc_candidates = decay.gc_candidates;
         let extraction_queue = monitor.extraction_queue().len();
 
-        // Count actual stored memories from vector store
-        let dims = self.embedder.dimensions();
-        let total_memories = if let Ok(mut vs) = self.vector_store.lock() {
-            // Count for known tenants by searching each
-            let tenants = ["hermes"];
-            let mut count: u64 = 0;
-            for t in &tenants {
-                count += vs.count(t, dims) as u64;
-            }
-            count
-        } else {
-            0
-        };
+        // Count from Tantivy (supports concurrent reads, no WAL lock)
+        let total_memories = self.text_store.count();
 
         StatusResponse {
             health: "healthy".to_string(),
@@ -582,67 +613,37 @@ impl PerspectiveEngine {
     pub fn list_memories(
         &self,
         tenant_id: &str,
-        _query: &str,
+        query: &str,
         limit: usize,
     ) -> MemoriesResponse {
-        let dims = self.embedder.dimensions();
-        let results = if let Ok(mut vs) = self.vector_store.lock().map_err(|e| PerspectiveError::Qdrant(e.to_string())) {
-            vs.search(
-                tenant_id,
-                vec![0.0; dims],
-                limit,
-                dims,
-            )
-            .unwrap_or_default()
+        // Use Tantivy for read-only listing (supports concurrent readers)
+        let results = if query.is_empty() {
+            self.text_store.list_all(limit).unwrap_or_default()
         } else {
-            vec![]
+            self.text_store
+                .search(tenant_id, query, limit)
+                .unwrap_or_default()
         };
+
+        let total = self.text_store.count();
 
         let memories: Vec<MemorySummary> = results
             .into_iter()
-            .map(|sr| {
-                let content = sr
-                    .payload
-                    .as_ref()
-                    .and_then(|p| p.get("content"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let mem_type = sr
-                    .payload
-                    .as_ref()
-                    .and_then(|p| p.get("memory_type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("episodic")
-                    .to_string();
-                let tags: Vec<String> = sr
-                    .payload
-                    .as_ref()
-                    .and_then(|p| p.get("tags"))
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                MemorySummary {
-                    id: sr.id.to_string(),
-                    memory_type: mem_type,
-                    content,
-                    tags,
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
-                    importance: None,
-                    stability: None,
-                    access_count: 0,
-                    last_accessed: Utc::now(),
-                    source_session: None,
-                }
+            .map(|sr| MemorySummary {
+                id: sr.id.to_string(),
+                memory_type: "episodic".to_string(),
+                content: sr.content,
+                tags: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                importance: None,
+                stability: None,
+                access_count: 0,
+                last_accessed: Utc::now(),
+                source_session: None,
             })
             .collect();
 
-        MemoriesResponse { memories }
+        MemoriesResponse { memories, total }
     }
 }

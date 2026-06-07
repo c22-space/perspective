@@ -559,10 +559,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             dashboard_port,
             dashboard_dir,
         } => {
-            let config = load_config(cli.config.as_deref());
+            let mut config = load_config(cli.config.as_deref());
+            // Apply --data-dir override
+            if let Some(ref d) = cli.data_dir {
+                config.storage.data_dir = d.clone();
+            }
 
-            // Initialize the PerspectiveEngine
-            let engine = match PerspectiveEngine::new(config.clone()) {
+            // Initialize the PerspectiveEngine (read-only: may skip graph if locked)
+            let engine = match PerspectiveEngine::new_readonly(config.clone()) {
                 Ok(e) => {
                     println!("  ✓ PerspectiveEngine initialized");
                     Arc::new(e)
@@ -571,7 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("  ⚠ Could not initialize PerspectiveEngine: {e}");
                     eprintln!("    API endpoints requiring the engine will return errors.");
                     eprintln!("    Dashboard and health check will still work.");
-                    Arc::new(PerspectiveEngine::new(Config::default())?)
+                    Arc::new(PerspectiveEngine::new_readonly(Config::default())?)
                 }
             };
 

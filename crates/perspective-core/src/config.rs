@@ -9,6 +9,8 @@ pub struct Config {
     pub consolidation: ConsolidationConfig,
     pub storage: StorageConfig,
     pub retrieval: RetrievalConfig,
+    #[serde(default)]
+    pub dashboard_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +116,7 @@ impl Default for Config {
                 graph_hop_limit: 2,
                 rrf_k: 60.0,
             },
+            dashboard_port: None,
         }
     }
 }
