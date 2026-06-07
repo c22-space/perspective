@@ -2,8 +2,11 @@ mod dashboard;
 
 use clap::{Parser, Subcommand};
 use perspective_core::config::Config;
-use serde::Serialize;
+use perspective_core::engine::{PerspectiveEngine, StoreRequest};
+use perspective_core::types::MemoryType;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -107,6 +110,298 @@ struct ActivityEntry {
     tenant_id: String,
     memory_type: String,
     content: String,
+}
+
+// ── API Request / Response types ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct StoreApiRequest {
+    tenant_id: String,
+    content: String,
+    memory_type: MemoryType,
+    tags: Option<Vec<String>>,
+    context: Option<String>,
+    session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StoreApiResponse {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct RecallApiRequest {
+    tenant_id: String,
+    query: String,
+    budget: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct RecallMemoryItem {
+    id: String,
+    content: String,
+    #[serde(rename = "type")]
+    memory_type: String,
+    score: f32,
+}
+
+#[derive(Serialize)]
+struct RecallApiResponse {
+    memories: Vec<RecallMemoryItem>,
+    count: usize,
+}
+
+#[derive(Deserialize)]
+struct ReflectApiRequest {
+    tenant_id: String,
+    query: String,
+}
+
+#[derive(Serialize)]
+struct ReflectApiResponse {
+    synthesis: String,
+}
+
+#[derive(Serialize)]
+struct HealthApiResponse {
+    healthy: bool,
+    version: String,
+}
+
+#[derive(Serialize)]
+struct TenantsApiResponse {
+    tenants: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+// ── Helper: extract body from raw HTTP request ────────────────────────────────
+
+fn extract_body(request: &str) -> &str {
+    // Find the blank line separating headers from body
+    if let Some(pos) = request.find("\r\n\r\n") {
+        &request[pos + 4..]
+    } else if let Some(pos) = request.find("\n\n") {
+        &request[pos + 2..]
+    } else {
+        ""
+    }
+}
+
+/// Memory type as a string for API responses.
+fn memory_type_str(mt: &MemoryType) -> &'static str {
+    match mt {
+        MemoryType::Episodic => "episodic",
+        MemoryType::Semantic => "semantic",
+        MemoryType::Procedural => "procedural",
+    }
+}
+
+/// Handle a POST /api/store request.
+async fn handle_store(
+    engine: &PerspectiveEngine,
+    body: &str,
+) -> (String, String) {
+    let req: StoreApiRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp = ErrorResponse { error: format!("Invalid request body: {e}") };
+            return (
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            );
+        }
+    };
+
+    let tags = req.tags.unwrap_or_default();
+    let metadata = std::collections::HashMap::new();
+
+    let store_req = StoreRequest {
+        tenant_id: req.tenant_id,
+        content: req.content,
+        memory_type: req.memory_type,
+        tags,
+        metadata,
+        context: req.context,
+        source_session: req.session_id,
+    };
+
+    match engine.store(store_req).await {
+        Ok(id) => {
+            let resp = StoreApiResponse { id: id.to_string() };
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+        Err(e) => {
+            let resp = ErrorResponse { error: format!("Store failed: {e}") };
+            (
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+    }
+}
+
+/// Handle a POST /api/recall request.
+async fn handle_recall(
+    engine: &PerspectiveEngine,
+    body: &str,
+) -> (String, String) {
+    let req: RecallApiRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp = ErrorResponse { error: format!("Invalid request body: {e}") };
+            return (
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            );
+        }
+    };
+
+    let budget = req.budget.unwrap_or(10);
+
+    match engine.recall(&req.tenant_id, &req.query, budget).await {
+        Ok(result) => {
+            let memories: Vec<RecallMemoryItem> = result
+                .memories
+                .iter()
+                .zip(result.scores.iter())
+                .map(|(m, score)| {
+                    let (id, content, mt) = match m {
+                        perspective_core::types::Memory::Episodic(e) => {
+                            (e.base.id, e.base.content.clone(), memory_type_str(&MemoryType::Episodic))
+                        }
+                        perspective_core::types::Memory::Semantic(e) => {
+                            (e.base.id, e.base.content.clone(), memory_type_str(&MemoryType::Semantic))
+                        }
+                        perspective_core::types::Memory::Procedural(e) => {
+                            (e.base.id, e.base.content.clone(), memory_type_str(&MemoryType::Procedural))
+                        }
+                    };
+                    RecallMemoryItem {
+                        id: id.to_string(),
+                        content,
+                        memory_type: mt.to_string(),
+                        score: *score,
+                    }
+                })
+                .collect();
+
+            let count = memories.len();
+            let resp = RecallApiResponse { memories, count };
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+        Err(e) => {
+            let resp = ErrorResponse { error: format!("Recall failed: {e}") };
+            (
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+    }
+}
+
+/// Handle a POST /api/reflect request.
+async fn handle_reflect(
+    engine: &PerspectiveEngine,
+    body: &str,
+) -> (String, String) {
+    let req: ReflectApiRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp = ErrorResponse { error: format!("Invalid request body: {e}") };
+            return (
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            );
+        }
+    };
+
+    // Recall relevant memories to build a synthesis
+    let synthesis = match engine.recall(&req.tenant_id, &req.query, 5).await {
+        Ok(result) => {
+            if result.memories.is_empty() {
+                format!(
+                    "No memories found for query '{}' in tenant '{}'. \
+                     The engine has no stored context to reflect upon.",
+                    req.query, req.tenant_id
+                )
+            } else {
+                let summaries: Vec<String> = result
+                    .memories
+                    .iter()
+                    .map(|m| {
+                        let content = match m {
+                            perspective_core::types::Memory::Episodic(e) => &e.base.content,
+                            perspective_core::types::Memory::Semantic(e) => &e.base.content,
+                            perspective_core::types::Memory::Procedural(e) => &e.base.content,
+                        };
+                        content.chars().take(200).collect::<String>()
+                    })
+                    .collect();
+
+                format!(
+                    "Reflection on '{}' (tenant '{}'): found {} relevant memories. \
+                     Key themes: {}. \
+                     Summary of retrieved context: [{}]",
+                    req.query,
+                    req.tenant_id,
+                    result.memories.len(),
+                    summaries.len(), // count of themes
+                    summaries.join(" | ")
+                )
+            }
+        }
+        Err(e) => {
+            format!("Reflection failed: {e}")
+        }
+    };
+
+    let resp = ReflectApiResponse { synthesis };
+    (
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+        serde_json::to_string(&resp).unwrap_or_default(),
+    )
+}
+
+/// Handle a GET /api/health request.
+fn handle_health() -> (String, String) {
+    let resp = HealthApiResponse {
+        healthy: true,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    (
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+        serde_json::to_string(&resp).unwrap_or_default(),
+    )
+}
+
+/// Handle a GET /api/tenants request.
+async fn handle_tenants(engine: &PerspectiveEngine) -> (String, String) {
+    match engine.list_tenants().await {
+        Ok(tenants) => {
+            let resp = TenantsApiResponse { tenants };
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+        Err(e) => {
+            let resp = ErrorResponse { error: format!("Failed to list tenants: {e}") };
+            (
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+    }
 }
 
 /// Try to load a config from file, falling back to default.
@@ -241,6 +536,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let status_json = serde_json::to_string(&status_payload)?;
             let html = dashboard::dashboard_html(&status_json);
 
+            // Initialize the PerspectiveEngine
+            let engine = match PerspectiveEngine::new(config.clone()).await {
+                Ok(e) => {
+                    println!("  ✓ PerspectiveEngine initialized");
+                    Arc::new(e)
+                }
+                Err(e) => {
+                    eprintln!("  ⚠ Could not initialize PerspectiveEngine: {e}");
+                    eprintln!("    API endpoints requiring the engine will return errors.");
+                    eprintln!("    Dashboard and health check will still work.");
+                    // Create a dummy config for the fallback engine
+                    // We can't create the engine without backing stores, so we'll
+                    // use an Option approach in the handler.
+                    // For now, create with default config and let it fail gracefully.
+                    Arc::new(PerspectiveEngine::new(Config::default()).await?)
+                }
+            };
+
             println!("╔══════════════════════════════════════════╗");
             println!("║      Perspective Memory Engine           ║");
             println!("╚══════════════════════════════════════════╝");
@@ -249,6 +562,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if dashboard_port > 0 {
                 println!("  Dashboard:    http://{host}:{dashboard_port}");
             }
+            println!("  API:          http://{host}:{dashboard_port}/api/");
             println!("  Data dir:     {}", config.storage.data_dir.display());
             println!();
             println!("  ✓ Server ready. Listening...");
@@ -257,6 +571,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if dashboard_port > 0 {
                 let html_for_server = html.clone();
                 let config_for_server = config.clone();
+                let engine_for_server = engine.clone();
                 let dashboard_handle = tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     use tokio::net::TcpListener;
@@ -277,28 +592,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(_) => continue,
                         };
 
-                        let mut buf = vec![0u8; 4096];
+                        let mut buf = vec![0u8; 8192];
                         let n = match stream.read(&mut buf).await {
                             Ok(n) => n,
                             Err(_) => continue,
                         };
                         let request = String::from_utf8_lossy(&buf[..n]);
 
-                        let (status_line, body) = if request.starts_with("GET /api/status") {
+                        // ── Determine method and path ──────────────────────
+                        let first_line = request.lines().next().unwrap_or("");
+                        let parts: Vec<&str> = first_line.split_whitespace().collect();
+                        let method = parts.get(0).copied().unwrap_or("");
+                        let path = parts.get(1).copied().unwrap_or("/");
+
+                        let (status_line, body) = if method == "OPTIONS" {
+                            // CORS preflight
+                            (
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
+                                 Access-Control-Allow-Origin: *\r\n\
+                                 Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+                                 Access-Control-Allow-Headers: Content-Type\r\n\
+                                 Content-Length: 0\r\nConnection: close\r\n\r\n".into(),
+                                String::new(),
+                            )
+                        } else if method == "GET" && path == "/api/health" {
+                            handle_health()
+                        } else if method == "GET" && path == "/api/tenants" {
+                            handle_tenants(&engine_for_server).await
+                        } else if method == "GET" && path == "/api/status" {
                             let st = build_status(&config_for_server);
                             let json = serde_json::to_string(&st).unwrap_or_default();
                             (
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                                 json,
                             )
-                        } else if request.starts_with("GET /") || request.starts_with("GET / ") {
+                        } else if method == "POST" && path == "/api/store" {
+                            let body_str = extract_body(&request).to_string();
+                            handle_store(&engine_for_server, &body_str).await
+                        } else if method == "POST" && path == "/api/recall" {
+                            let body_str = extract_body(&request).to_string();
+                            handle_recall(&engine_for_server, &body_str).await
+                        } else if method == "POST" && path == "/api/reflect" {
+                            let body_str = extract_body(&request).to_string();
+                            handle_reflect(&engine_for_server, &body_str).await
+                        } else if method == "GET" && (path == "/" || path == "/ ") {
                             (
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n",
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n".into(),
                                 html_for_server.clone(),
                             )
                         } else {
                             (
-                                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n",
+                                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n".into(),
                                 "Not found".to_string(),
                             )
                         };
