@@ -91,9 +91,11 @@ impl PerspectiveEngine {
             "episodic" => MemoryType::Episodic,
             "semantic" => MemoryType::Semantic,
             "procedural" => MemoryType::Procedural,
-            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            _ => {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "Invalid memory_type: {memory_type}. Use 'episodic', 'semantic', or 'procedural'"
-            ))),
+            )))
+            }
         };
 
         let req = StoreRequest {
