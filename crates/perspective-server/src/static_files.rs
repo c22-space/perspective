@@ -48,7 +48,11 @@ impl StaticFiles {
             Ok(contents) => {
                 let mime = mime_from_path(&file_path);
                 let status = "HTTP/1.1 200 OK";
-                (status.to_string(), mime, String::from_utf8_lossy(&contents).to_string())
+                (
+                    status.to_string(),
+                    mime,
+                    String::from_utf8_lossy(&contents).to_string(),
+                )
             }
             Err(_) => self.spa_fallback(),
         }
@@ -64,11 +68,7 @@ impl StaticFiles {
 }
 
 fn mime_from_path(path: &Path) -> String {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-    {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "html" => "text/html; charset=utf-8",
         "js" | "mjs" => "application/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",

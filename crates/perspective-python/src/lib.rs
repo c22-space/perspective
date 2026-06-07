@@ -37,11 +37,33 @@ struct PerspectiveEngine {
 #[pymethods]
 impl PerspectiveEngine {
     #[new]
-    #[pyo3(signature = (data_dir, dashboard_port=None, dashboard_dist_dir=None))]
-    fn py_new(data_dir: &str, dashboard_port: Option<u16>, dashboard_dist_dir: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (data_dir, dashboard_port=None, dashboard_dist_dir=None, extraction_endpoint=None, extraction_model=None, extraction_api_key=None, extraction_enabled=None))]
+    fn py_new(
+        data_dir: &str,
+        dashboard_port: Option<u16>,
+        dashboard_dist_dir: Option<String>,
+        extraction_endpoint: Option<String>,
+        extraction_model: Option<String>,
+        extraction_api_key: Option<String>,
+        extraction_enabled: Option<bool>,
+    ) -> PyResult<Self> {
         let mut config = Config::default();
         config.storage.data_dir = std::path::PathBuf::from(data_dir);
         config.dashboard_port = dashboard_port;
+
+        // Apply extraction overrides
+        if let Some(ep) = extraction_endpoint {
+            config.extraction.endpoint = ep;
+        }
+        if let Some(m) = extraction_model {
+            config.extraction.model = m;
+        }
+        if let Some(k) = extraction_api_key {
+            config.extraction.api_key = Some(k);
+        }
+        if let Some(e) = extraction_enabled {
+            config.extraction.enabled = e;
+        }
 
         let engine = CoreEngine::new(config.clone()).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -91,9 +113,11 @@ impl PerspectiveEngine {
             "episodic" => MemoryType::Episodic,
             "semantic" => MemoryType::Semantic,
             "procedural" => MemoryType::Procedural,
-            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            _ => {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "Invalid memory_type: {memory_type}. Use 'episodic', 'semantic', or 'procedural'"
-            ))),
+            )))
+            }
         };
 
         let req = StoreRequest {
@@ -104,11 +128,16 @@ impl PerspectiveEngine {
             metadata: HashMap::new(),
             context,
             source_session: session_id,
+            skip_extraction: false,
         };
 
         let e = &*self.inner;
-        let id = self.runtime.block_on(async { e.store(req).await })
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Store failed: {e}")))?;
+        let id = self
+            .runtime
+            .block_on(async { e.store(req).await })
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Store failed: {e}"))
+            })?;
 
         Ok(id.to_string())
     }
@@ -116,25 +145,42 @@ impl PerspectiveEngine {
     #[pyo3(signature = (tenant_id, query, budget=10))]
     fn recall(&self, tenant_id: &str, query: &str, budget: usize) -> PyResult<Vec<MemoryResult>> {
         let e = &*self.inner;
-        let result = self.runtime.block_on(async { e.recall(tenant_id, query, budget).await })
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Recall failed: {e}")))?;
+        let result = self
+            .runtime
+            .block_on(async { e.recall(tenant_id, query, budget).await })
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Recall failed: {e}"))
+            })?;
 
         let mut results = Vec::new();
         for (i, memory) in result.memories.iter().enumerate() {
             let score = result.scores.get(i).copied().unwrap_or(0.0);
             let (id, content, mt, tags) = match memory {
                 ::perspective_core::types::Memory::Episodic(e) => (
-                    e.base.id.to_string(), e.base.content.clone(), "episodic", e.base.tags.clone(),
+                    e.base.id.to_string(),
+                    e.base.content.clone(),
+                    "episodic",
+                    e.base.tags.clone(),
                 ),
                 ::perspective_core::types::Memory::Semantic(e) => (
-                    e.base.id.to_string(), e.base.content.clone(), "semantic", e.base.tags.clone(),
+                    e.base.id.to_string(),
+                    e.base.content.clone(),
+                    "semantic",
+                    e.base.tags.clone(),
                 ),
                 ::perspective_core::types::Memory::Procedural(e) => (
-                    e.base.id.to_string(), e.base.content.clone(), "procedural", e.base.tags.clone(),
+                    e.base.id.to_string(),
+                    e.base.content.clone(),
+                    "procedural",
+                    e.base.tags.clone(),
                 ),
             };
             results.push(MemoryResult {
-                id, content, memory_type: mt.to_string(), score, tags,
+                id,
+                content,
+                memory_type: mt.to_string(),
+                score,
+                tags,
             });
         }
         Ok(results)
@@ -171,21 +217,47 @@ impl PerspectiveEngine {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid UUID: {memory_id}"))
         })?;
         let e = &*self.inner;
-        self.runtime.block_on(async { e.delete_memory(tenant_id, id).await })
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Delete failed: {e}")))?;
+        self.runtime
+            .block_on(async { e.delete_memory(tenant_id, id).await })
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Delete failed: {e}"))
+            })?;
         Ok(())
     }
 
     fn health(&self) -> PyResult<bool> {
         let e = &*self.inner;
-        let result = self.runtime.block_on(async { e.recall("default", "health_check", 1).await });
+        let result = self
+            .runtime
+            .block_on(async { e.recall("default", "health_check", 1).await });
         Ok(result.is_ok())
     }
 
     fn list_tenants(&self) -> PyResult<Vec<String>> {
         let e = &*self.inner;
-        self.runtime.block_on(async { e.list_tenants().await })
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to list tenants: {e}")))
+        self.runtime
+            .block_on(async { e.list_tenants().await })
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "Failed to list tenants: {e}"
+                ))
+            })
+    }
+
+    /// Process a batch of buffered texts through the LLM extraction pipeline.
+    /// Returns the number of facts extracted.
+    fn process_extraction_batch(&self) -> PyResult<usize> {
+        let e = &*self.inner;
+        self.runtime
+            .block_on(async { e.process_extraction_batch().await })
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Extraction failed: {e}"))
+            })
+    }
+
+    /// Get the number of memories queued for LLM extraction.
+    fn extraction_queue_len(&self) -> usize {
+        self.inner.extraction_queue_len()
     }
 
     // --- Dashboard query methods (sync, for HTTP handlers) ---
@@ -211,7 +283,8 @@ impl PerspectiveEngine {
     }
 
     fn memories_json(&self, tenant_id: &str, query: &str, limit: usize) -> String {
-        serde_json::to_string(&self.inner.list_memories(tenant_id, query, limit)).unwrap_or_default()
+        serde_json::to_string(&self.inner.list_memories(tenant_id, query, limit))
+            .unwrap_or_default()
     }
 }
 
@@ -222,17 +295,28 @@ impl PerspectiveEngine {
 /// Serve a request from the React dist directory (filesystem).
 fn serve_static(dist_dir: &std::path::Path, mut url: &str) -> Option<(Vec<u8>, &'static str)> {
     let mime = |p: &str| -> &'static str {
-        if p.ends_with(".js") { "application/javascript" }
-        else if p.ends_with(".css") { "text/css" }
-        else if p.ends_with(".svg") { "image/svg+xml" }
-        else if p.ends_with(".html") { "text/html; charset=utf-8" }
-        else if p.ends_with(".json") { "application/json" }
-        else if p.ends_with(".png") { "image/png" }
-        else if p.ends_with(".woff") || p.ends_with(".woff2") { "font/woff2" }
-        else { "application/octet-stream" }
+        if p.ends_with(".js") {
+            "application/javascript"
+        } else if p.ends_with(".css") {
+            "text/css"
+        } else if p.ends_with(".svg") {
+            "image/svg+xml"
+        } else if p.ends_with(".html") {
+            "text/html; charset=utf-8"
+        } else if p.ends_with(".json") {
+            "application/json"
+        } else if p.ends_with(".png") {
+            "image/png"
+        } else if p.ends_with(".woff") || p.ends_with(".woff2") {
+            "font/woff2"
+        } else {
+            "application/octet-stream"
+        }
     };
     // Try exact file match first
-    if url == "/" { url = "/index.html" }
+    if url == "/" {
+        url = "/index.html"
+    }
     let rel = url.trim_start_matches('/');
     let file_path = dist_dir.join(rel);
     if let Ok(data) = std::fs::read(&file_path) {
@@ -280,19 +364,27 @@ fn run_dashboard_server(
                     let mut resp = tiny_http::Response::from_string("").with_status_code(204);
                     for h in &cors_headers {
                         resp = resp.with_header(hdr(h));
-                                                }
-                                                let _ = request.respond(resp);
+                    }
+                    let _ = request.respond(resp);
                     continue;
                 }
 
                 // API routes -> JSON
                 let response_body: serde_json::Value = if url.starts_with("/api/") {
                     match url.as_str() {
-                        "/api/status" => serde_json::to_value(engine.status_response()).unwrap_or_default(),
+                        "/api/status" => {
+                            serde_json::to_value(engine.status_response()).unwrap_or_default()
+                        }
                         "/api/health" => serde_json::json!({"status": "healthy"}),
-                        "/api/processes" => serde_json::to_value(engine.get_processes()).unwrap_or_default(),
-                        "/api/graph" => serde_json::to_value(engine.get_graph_stats()).unwrap_or_default(),
-                        "/api/config" => serde_json::to_value(engine.get_config_response()).unwrap_or_default(),
+                        "/api/processes" => {
+                            serde_json::to_value(engine.get_processes()).unwrap_or_default()
+                        }
+                        "/api/graph" => {
+                            serde_json::to_value(engine.get_graph_stats()).unwrap_or_default()
+                        }
+                        "/api/config" => {
+                            serde_json::to_value(engine.get_config_response()).unwrap_or_default()
+                        }
                         u if u.starts_with("/api/activity") => {
                             let limit = parse_qs(&url, "limit", 50usize);
                             serde_json::to_value(engine.get_activity(limit)).unwrap_or_default()
@@ -300,10 +392,11 @@ fn run_dashboard_server(
                         u if u.starts_with("/api/memories") => {
                             let q = parse_qs_str(&url, "q", "");
                             let limit = parse_qs(&url, "limit", 50usize);
-                            serde_json::to_value(engine.list_memories("hermes", q, limit)).unwrap_or_default()
+                            serde_json::to_value(engine.list_memories("hermes", q, limit))
+                                .unwrap_or_default()
                         }
                         u if u.starts_with("/api/tenants") => {
-                            serde_json::json!(["hermes"])  // list_tenants is async, use hardcoded for now
+                            serde_json::json!(["hermes"]) // list_tenants is async, use hardcoded for now
                         }
                         _ => serde_json::json!({"error": "Not found"}),
                     }
@@ -318,7 +411,8 @@ fn run_dashboard_server(
                         let _ = request.respond(resp);
                         continue;
                     } else {
-                        let resp = tiny_http::Response::from_string("Not Found").with_status_code(404);
+                        let resp =
+                            tiny_http::Response::from_string("Not Found").with_status_code(404);
                         let _ = request.respond(resp);
                         continue;
                     }

@@ -231,6 +231,7 @@ async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String
         metadata,
         context: req.context,
         source_session: req.session_id,
+        skip_extraction: false,
     };
 
     match engine.store(store_req).await {
@@ -698,13 +699,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else if method == "GET" && path.starts_with("/api/memories") {
                             // Parse optional ?q= and ?limit= query params
                             let (q, limit) = if let Some(qs) = path.split_once('?') {
-                                let params: std::collections::HashMap<&str, &str> = qs.1
-                                    .split('&')
-                                    .filter_map(|p| p.split_once('='))
-                                    .collect();
+                                let params: std::collections::HashMap<&str, &str> =
+                                    qs.1.split('&').filter_map(|p| p.split_once('=')).collect();
                                 (
                                     params.get("q").unwrap_or(&"").to_string(),
-                                    params.get("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(50),
+                                    params
+                                        .get("limit")
+                                        .and_then(|l| l.parse::<usize>().ok())
+                                        .unwrap_or(50),
                                 )
                             } else {
                                 (String::new(), 50)
@@ -737,7 +739,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     )
                                 } else {
                                     (
-                                        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n".into(),
+                                        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n"
+                                            .into(),
                                         "Not found".to_string(),
                                     )
                                 }
