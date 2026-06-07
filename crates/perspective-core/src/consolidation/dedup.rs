@@ -39,12 +39,12 @@ pub fn find_duplicates(memories: &[Memory], threshold: f32) -> Vec<(Uuid, Uuid)>
         };
         let id_i = memories[i].id();
 
-        for j in (i + 1)..memories.len() {
-            let emb_j = match memory_embedding(&memories[j]) {
+        for memory_j in &memories[i + 1..] {
+            let emb_j = match memory_embedding(memory_j) {
                 Some(e) => e,
                 None => continue,
             };
-            let id_j = memories[j].id();
+            let id_j = memory_j.id();
 
             let sim = cosine_similarity(emb_i, emb_j);
             if sim >= threshold {

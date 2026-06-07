@@ -70,8 +70,6 @@ impl ExtractionBatcher {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,7 +104,7 @@ mod tests {
     #[test]
     fn test_flush_on_interval() {
         let mut batcher = ExtractionBatcher::with_params(
-            100, // large batch size so it won't trigger
+            100,                                 // large batch size so it won't trigger
             std::time::Duration::from_millis(0), // immediate
         );
 
@@ -118,10 +116,7 @@ mod tests {
 
     #[test]
     fn test_drain_resets_timer() {
-        let mut batcher = ExtractionBatcher::with_params(
-            2,
-            std::time::Duration::from_millis(0),
-        );
+        let mut batcher = ExtractionBatcher::with_params(2, std::time::Duration::from_millis(0));
 
         batcher.buffer("a");
         assert!(batcher.should_flush());

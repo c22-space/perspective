@@ -1,9 +1,9 @@
-use tantivy::schema::*;
-use tantivy::{Index, IndexReader, IndexWriter, doc};
-use tantivy::query::QueryParser;
-use uuid::Uuid;
-use std::path::Path;
 use crate::error::{PerspectiveError, Result};
+use std::path::Path;
+use tantivy::query::QueryParser;
+use tantivy::schema::*;
+use tantivy::{doc, Index, IndexReader, IndexWriter};
+use uuid::Uuid;
 
 pub struct TextStore {
     index: Index,
@@ -21,8 +21,7 @@ pub struct TextSearchResult {
 
 impl TextStore {
     pub fn new(path: &Path) -> Result<Self> {
-        std::fs::create_dir_all(path)
-            .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
+        std::fs::create_dir_all(path).map_err(|e| PerspectiveError::Storage(e.to_string()))?;
 
         let mut schema_builder = Schema::builder();
         let content_field = schema_builder.add_text_field("content", TEXT | STORED);
@@ -48,13 +47,9 @@ impl TextStore {
         })
     }
 
-    pub fn add_document(
-        &self,
-        tenant_id: &str,
-        id: Uuid,
-        content: &str,
-    ) -> Result<()> {
-        let mut writer: IndexWriter = self.index
+    pub fn add_document(&self, tenant_id: &str, id: Uuid, content: &str) -> Result<()> {
+        let mut writer: IndexWriter = self
+            .index
             .writer(50_000_000)
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
 
@@ -64,9 +59,11 @@ impl TextStore {
             self.tenant_field => tenant_id,
         );
 
-        writer.add_document(doc)
+        writer
+            .add_document(doc)
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
-        writer.commit()
+        writer
+            .commit()
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -79,23 +76,24 @@ impl TextStore {
     ) -> Result<Vec<TextSearchResult>> {
         let searcher = self.reader.searcher();
 
-        let query_parser = QueryParser::for_index(
-            &self.index,
-            vec![self.content_field],
-        );
+        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
 
         let parsed_query = query_parser
             .parse_query(query_str)
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
 
         let top_docs = searcher
-            .search(&parsed_query, &tantivy::collector::TopDocs::with_limit(limit))
+            .search(
+                &parsed_query,
+                &tantivy::collector::TopDocs::with_limit(limit),
+            )
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
 
         let mut results = Vec::new();
         for (score, doc_addr) in top_docs {
             if let Ok(doc) = searcher.doc::<tantivy::TantivyDocument>(doc_addr) {
-                let is_tenant = doc.get_first(self.tenant_field)
+                let is_tenant = doc
+                    .get_first(self.tenant_field)
                     .and_then(|v| v.as_str())
                     .map(|s| s == tenant_id)
                     .unwrap_or(false);
@@ -116,7 +114,8 @@ impl TextStore {
     }
 
     pub fn delete_document(&self, _tenant_id: &str, id: Uuid) -> Result<()> {
-        let mut writer: IndexWriter = self.index
+        let mut writer: IndexWriter = self
+            .index
             .writer(50_000_000)
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
 
@@ -125,9 +124,11 @@ impl TextStore {
             tantivy::schema::IndexRecordOption::Basic,
         );
 
-        writer.delete_query(Box::new(query))
+        writer
+            .delete_query(Box::new(query))
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
-        writer.commit()
+        writer
+            .commit()
             .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
         Ok(())
     }

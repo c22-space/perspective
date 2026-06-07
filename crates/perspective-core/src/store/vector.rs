@@ -1,16 +1,16 @@
-use qdrant_client::Qdrant;
-use qdrant_client::Payload;
-use qdrant_client::qdrant::{
-    CreateCollectionBuilder, Distance, PointStruct, VectorParamsBuilder,
-    SearchPointsBuilder, DeletePointsBuilder, UpsertPointsBuilder,
-    PointsIdsList, point_id,
-};
-use uuid::Uuid;
 use crate::error::{PerspectiveError, Result};
+use qdrant_edge::{
+    Distance, EdgeConfigBuilder, EdgeShard, EdgeVectorParamsBuilder, PointId,
+    PointInsertOperations, PointOperations, PointStruct, ScoredPoint, SearchRequest,
+    UpdateOperation, DEFAULT_VECTOR_NAME,
+};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use uuid::Uuid;
 
 pub struct QdrantVectorStore {
-    client: Qdrant,
-    collection_prefix: String,
+    shards: std::collections::HashMap<String, Arc<EdgeShard>>,
+    data_dir: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -20,122 +20,160 @@ pub struct SearchResult {
     pub payload: Option<serde_json::Value>,
 }
 
+fn uuid_to_point_id(id: Uuid) -> PointId {
+    PointId::Uuid(id)
+}
+
+fn point_id_to_uuid(id: &PointId) -> Uuid {
+    match id {
+        PointId::NumId(n) => Uuid::from_u128(*n as u128),
+        PointId::Uuid(u) => *u,
+    }
+}
+
 impl QdrantVectorStore {
-    pub async fn new(url: &str, api_key: Option<&str>) -> Result<Self> {
-        let client = Qdrant::from_url(url)
-            .api_key(api_key.unwrap_or(""))
-            .build()
-            .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?;
+    pub fn new(data_dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(data_dir).map_err(|e| PerspectiveError::Qdrant(e.to_string()))?;
         Ok(Self {
-            client,
-            collection_prefix: "perspective".into(),
+            shards: std::collections::HashMap::new(),
+            data_dir: data_dir.to_path_buf(),
         })
     }
 
-    fn collection_name(&self, tenant_id: &str) -> String {
-        format!("{}_{}", self.collection_prefix, tenant_id)
+    fn shard_path(&self, tenant_id: &str) -> PathBuf {
+        self.data_dir.join(format!("qdrant_{}", tenant_id))
     }
 
-    pub async fn ensure_collection(
-        &self,
+    fn get_or_create_shard(
+        &mut self,
         tenant_id: &str,
-        dimensions: u64,
-    ) -> Result<()> {
-        let name = self.collection_name(tenant_id);
-        self.client
-            .create_collection(
-                CreateCollectionBuilder::new(&name)
-                    .vectors_config(VectorParamsBuilder::new(dimensions, Distance::Cosine))
-                    .on_disk_payload(true),
-            )
-            .await
-            .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?;
-        Ok(())
+        dimensions: usize,
+    ) -> Result<Arc<EdgeShard>> {
+        if let Some(shard) = self.shards.get(tenant_id) {
+            return Ok(Arc::clone(shard));
+        }
+
+        let path = self.shard_path(tenant_id);
+        std::fs::create_dir_all(&path)
+            .map_err(|e| PerspectiveError::Qdrant(format!("Failed to create shard dir: {}", e)))?;
+
+        let shard = if path.join("segments").exists() {
+            EdgeShard::load(&path, None)
+                .map_err(|e| PerspectiveError::Qdrant(format!("Failed to load shard: {}", e)))?
+        } else {
+            let config = EdgeConfigBuilder::new()
+                .vector(
+                    DEFAULT_VECTOR_NAME,
+                    EdgeVectorParamsBuilder::new(dimensions, Distance::Cosine).build(),
+                )
+                .on_disk_payload(true)
+                .build();
+
+            EdgeShard::new(&path, config)
+                .map_err(|e| PerspectiveError::Qdrant(format!("Failed to create shard: {}", e)))?
+        };
+
+        let shard = Arc::new(shard);
+        self.shards
+            .insert(tenant_id.to_string(), Arc::clone(&shard));
+        Ok(shard)
     }
 
-    pub async fn upsert(
-        &self,
+    pub fn upsert(
+        &mut self,
         tenant_id: &str,
         id: Uuid,
         vector: Vec<f32>,
         payload: serde_json::Value,
+        dimensions: usize,
     ) -> Result<()> {
-        let name = self.collection_name(tenant_id);
-        let qdrant_payload: Payload = payload.try_into()
-            .map_err(|e: qdrant_client::QdrantError| PerspectiveError::Qdrant(e.to_string()))?;
-        let point = PointStruct::new(id.to_string(), vector, qdrant_payload);
-        self.client
-            .upsert_points(
-                UpsertPointsBuilder::new(name, vec![point]),
-            )
-            .await
-            .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?;
+        let shard = self.get_or_create_shard(tenant_id, dimensions)?;
+
+        let point = PointStruct::new(
+            uuid_to_point_id(id),
+            qdrant_edge::Vectors::from(vector),
+            payload,
+        );
+
+        let op =
+            PointOperations::UpsertPoints(PointInsertOperations::PointsList(vec![point.into()]));
+
+        shard
+            .update(UpdateOperation::PointOperation(op))
+            .map_err(|e| PerspectiveError::Qdrant(format!("Upsert failed: {}", e)))?;
+
         Ok(())
     }
 
-    pub async fn search(
-        &self,
+    pub fn search(
+        &mut self,
         tenant_id: &str,
         query_vector: Vec<f32>,
-        limit: u64,
+        limit: usize,
+        dimensions: usize,
     ) -> Result<Vec<SearchResult>> {
-        let name = self.collection_name(tenant_id);
-        let results = self.client
-            .search_points(
-                SearchPointsBuilder::new(&name, query_vector, limit)
-                    .with_payload(true),
-            )
-            .await
-            .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?;
+        let path = self.shard_path(tenant_id);
+        if !path.join("segments").exists() {
+            return Ok(vec![]);
+        }
+
+        let shard = self.get_or_create_shard(tenant_id, dimensions)?;
+
+        let search_request = SearchRequest {
+            query: query_vector.into(),
+            filter: None,
+            params: None,
+            limit,
+            offset: 0,
+            with_payload: Some(true.into()),
+            with_vector: None,
+            score_threshold: None,
+        };
+
+        let results: Vec<ScoredPoint> = shard
+            .search(search_request)
+            .map_err(|e| PerspectiveError::Qdrant(format!("Search failed: {}", e)))?;
 
         Ok(results
-            .result
             .into_iter()
             .map(|r| {
-                let id = match &r.id {
-                    Some(point_id) => match &point_id.point_id_options {
-                        Some(point_id::PointIdOptions::Uuid(uuid)) => {
-                            Uuid::parse_str(uuid).unwrap_or_default()
-                        }
-                        Some(point_id::PointIdOptions::Num(num)) => {
-                            Uuid::from_u128(*num as u128)
-                        }
-                        None => Uuid::nil(),
-                    },
-                    None => Uuid::nil(),
-                };
+                let id = point_id_to_uuid(&r.id);
+                let payload = r.payload.map(|p| {
+                    let mut map = serde_json::Map::new();
+                    for (k, v) in p.0 {
+                        map.insert(k, v);
+                    }
+                    serde_json::Value::Object(map)
+                });
                 SearchResult {
                     id,
                     score: r.score,
-                    payload: if r.payload.is_empty() {
-                        None
-                    } else {
-                        Some(serde_json::to_value(r.payload).unwrap_or_default())
-                    },
+                    payload,
                 }
             })
             .collect())
     }
 
-    pub async fn delete(&self, tenant_id: &str, id: Uuid) -> Result<()> {
-        let name = self.collection_name(tenant_id);
-        self.client
-            .delete_points(
-                DeletePointsBuilder::new(name)
-                    .points(PointsIdsList {
-                        ids: vec![id.to_string().into()],
-                    }),
-            )
-            .await
-            .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?;
+    pub fn delete(&mut self, tenant_id: &str, id: Uuid, dimensions: usize) -> Result<()> {
+        let path = self.shard_path(tenant_id);
+        if !path.join("segments").exists() {
+            return Ok(());
+        }
+
+        let shard = self.get_or_create_shard(tenant_id, dimensions)?;
+
+        let op = PointOperations::DeletePoints {
+            ids: vec![uuid_to_point_id(id)],
+        };
+
+        shard
+            .update(UpdateOperation::PointOperation(op))
+            .map_err(|e| PerspectiveError::Qdrant(format!("Delete failed: {}", e)))?;
+
         Ok(())
     }
 
-    pub async fn collection_exists(&self, tenant_id: &str) -> Result<bool> {
-        let name = self.collection_name(tenant_id);
-        let result = self.client.collection_exists(&name)
-            .await
-            .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?;
-        Ok(result)
+    pub fn collection_exists(&self, tenant_id: &str) -> bool {
+        self.shard_path(tenant_id).join("segments").exists()
     }
 }

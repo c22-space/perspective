@@ -138,10 +138,7 @@ mod tests {
 
     #[test]
     fn apply_decay_returns_strength_for_each_memory() {
-        let memories = vec![
-            make_episodic(1.0, 0),
-            make_semantic(10.0, 0),
-        ];
+        let memories = vec![make_episodic(1.0, 0), make_semantic(10.0, 0)];
         let config = default_config();
         let results = apply_decay_to_memories(&memories, &config);
         assert_eq!(results.len(), 2);

@@ -61,7 +61,10 @@ mod tests {
     fn strength_decays_over_time() {
         let early = calculate_strength(10.0, 10.0);
         let late = calculate_strength(10.0, 100.0);
-        assert!(late < early, "later strength should be lower: {late} < {early}");
+        assert!(
+            late < early,
+            "later strength should be lower: {late} < {early}"
+        );
     }
 
     #[test]
@@ -80,7 +83,10 @@ mod tests {
     fn reinforce_increases_stability() {
         let base = 10.0;
         let reinforced = reinforce(base, 0.1, 1);
-        assert!(reinforced > base, "reinforced ({reinforced}) should exceed base ({base})");
+        assert!(
+            reinforced > base,
+            "reinforced ({reinforced}) should exceed base ({base})"
+        );
     }
 
     #[test]
@@ -92,8 +98,14 @@ mod tests {
         let gain1 = first - 10.0;
         let gain10 = tenth - 10.0;
         let gain100 = hundredth - 10.0;
-        assert!(gain1 > gain10, "first gain ({gain1}) should exceed tenth ({gain10})");
-        assert!(gain10 > gain100, "tenth gain ({gain10}) should exceed hundredth ({gain100})");
+        assert!(
+            gain1 > gain10,
+            "first gain ({gain1}) should exceed tenth ({gain10})"
+        );
+        assert!(
+            gain10 > gain100,
+            "tenth gain ({gain10}) should exceed hundredth ({gain100})"
+        );
     }
 
     #[test]

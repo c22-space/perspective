@@ -1,8 +1,8 @@
 use perspective_core::config::Config;
 use perspective_core::engine::PerspectiveEngine;
+use perspective_core::engine::StoreRequest;
 use perspective_core::error::Result;
 use perspective_core::types::MemoryType;
-use perspective_core::engine::StoreRequest;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -36,7 +36,7 @@ impl PerspectiveProvider {
             "Initializing PerspectiveProvider (tenant={})",
             config.tenant_id
         );
-        let engine = PerspectiveEngine::new(config.engine.clone()).await?;
+        let engine = PerspectiveEngine::new(config.engine.clone())?;
         Ok(Self { engine, config })
     }
 
@@ -137,10 +137,7 @@ impl PerspectiveProvider {
         let result = self.engine.recall(tenant_id, query, default_budget).await?;
 
         if result.memories.is_empty() {
-            return Ok(format!(
-                "No memories found related to: \"{}\"",
-                query
-            ));
+            return Ok(format!("No memories found related to: \"{}\"", query));
         }
 
         let mut synthesis = format!(
@@ -179,10 +176,7 @@ impl PerspectiveProvider {
         }
 
         if !procedural.is_empty() {
-            synthesis.push_str(&format!(
-                "### Procedures ({}):\n",
-                procedural.len()
-            ));
+            synthesis.push_str(&format!("### Procedures ({}):\n", procedural.len()));
             for m in &procedural {
                 synthesis.push_str(&format!("- {}\n", m.content()));
             }
@@ -207,10 +201,7 @@ impl PerspectiveProvider {
         {
             Ok(_) => Ok(HealthStatus {
                 healthy: true,
-                message: format!(
-                    "Engine healthy, tenant={}",
-                    self.config.tenant_id
-                ),
+                message: format!("Engine healthy, tenant={}", self.config.tenant_id),
             }),
             Err(e) => {
                 warn!("Engine health check failed: {}", e);

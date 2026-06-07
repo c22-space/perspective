@@ -63,7 +63,10 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
 
             if is_capitalised || is_all_caps {
                 // Skip common sentence-initial words that are capitalised but not entities
-                if i == 0 && current_run.is_empty() && is_sentence_initial_word(&lower_cleaned(cleaned)) {
+                if i == 0
+                    && current_run.is_empty()
+                    && is_sentence_initial_word(&lower_cleaned(cleaned))
+                {
                     continue;
                 }
                 current_run.push(cleaned);
@@ -218,9 +221,23 @@ fn classify_entity(name: &str) -> EntityType {
 
     // Common organisation suffixes
     let org_suffixes = [
-        "inc", "inc.", "llc", "ltd", "ltd.", "corp", "corp.", "co", "co.",
-        "company", "foundation", "institute", "association", "university",
-        "laboratory", "lab", "studio",
+        "inc",
+        "inc.",
+        "llc",
+        "ltd",
+        "ltd.",
+        "corp",
+        "corp.",
+        "co",
+        "co.",
+        "company",
+        "foundation",
+        "institute",
+        "association",
+        "university",
+        "laboratory",
+        "lab",
+        "studio",
     ];
     for suffix in &org_suffixes {
         if lower.ends_with(suffix) {
@@ -230,10 +247,32 @@ fn classify_entity(name: &str) -> EntityType {
 
     // Common tool / project names
     let tool_keywords = [
-        "rust", "python", "javascript", "typescript", "docker", "kubernetes",
-        "postgres", "redis", "qdrant", "tantivy", "redb", "tauri", "react",
-        "vue", "angular", "node", "cargo", "git", "linux", "windows", "macos",
-        "openai", "anthropic", "claude", "gpt", "llama",
+        "rust",
+        "python",
+        "javascript",
+        "typescript",
+        "docker",
+        "kubernetes",
+        "postgres",
+        "redis",
+        "qdrant",
+        "tantivy",
+        "redb",
+        "tauri",
+        "react",
+        "vue",
+        "angular",
+        "node",
+        "cargo",
+        "git",
+        "linux",
+        "windows",
+        "macos",
+        "openai",
+        "anthropic",
+        "claude",
+        "gpt",
+        "llama",
     ];
     for kw in &tool_keywords {
         if lower.contains(kw) {
@@ -242,7 +281,15 @@ fn classify_entity(name: &str) -> EntityType {
     }
 
     // Location hints
-    let location_hints = ["street", "road", "avenue", "boulevard", "city", "state", "country"];
+    let location_hints = [
+        "street",
+        "road",
+        "avenue",
+        "boulevard",
+        "city",
+        "state",
+        "country",
+    ];
     for hint in &location_hints {
         if lower.contains(hint) {
             return EntityType::Location;

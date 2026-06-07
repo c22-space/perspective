@@ -8,7 +8,7 @@
 /// - Memory statistics (total count, counts by type)
 /// - Recent activity
 /// - Decay metrics (Ebbinghaus curve, stability averages)
-
+///
 /// Returns the full HTML for the dashboard page.
 /// `stats_json` should be a serde_json::Value with the engine status.
 pub fn dashboard_html(stats_json: &str) -> String {
