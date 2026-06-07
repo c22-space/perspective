@@ -55,7 +55,7 @@ jobs:
         working-directory: crates/perspective-python
         run: maturin build --release
       - name: Install wheel
-        run: pip install target/wheels/*.whl
+        run: pip install crates/perspective-python/target/wheels/*.whl
       - name: Smoke test
         run: |
           python3 -c "
