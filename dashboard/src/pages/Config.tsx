@@ -10,10 +10,11 @@ function KV({ label, value }: { label: string; value: string | number | null }) 
 }
 
 function Section({ title, entries }: { title: string; entries: [string, string][] }) {
+  const sorted = [...entries].sort(([a], [b]) => a.localeCompare(b));
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
       <h3 className="text-sm font-medium text-zinc-400 mb-3">{title}</h3>
-      {entries.map(([k, v]) => (
+      {sorted.map(([k, v]) => (
         <KV key={k} label={k} value={v} />
       ))}
     </div>
