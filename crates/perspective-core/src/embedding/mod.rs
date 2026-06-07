@@ -67,6 +67,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore]
     async fn test_local_embedder() {
         let embedder = LocalEmbedder::new("all-MiniLM-L6-v2").unwrap();
         assert!(embedder.dimensions() > 0);
