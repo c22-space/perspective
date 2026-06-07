@@ -116,7 +116,7 @@ impl Default for Config {
                 graph_hop_limit: 2,
                 rrf_k: 60.0,
             },
-            dashboard_port: None,
+            dashboard_port: Some(2085),
         }
     }
 }
