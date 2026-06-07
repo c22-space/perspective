@@ -201,14 +201,13 @@ fn memory_type_str(mt: &MemoryType) -> &'static str {
 }
 
 /// Handle a POST /api/store request.
-async fn handle_store(
-    engine: &PerspectiveEngine,
-    body: &str,
-) -> (String, String) {
+async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String) {
     let req: StoreApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
-            let resp = ErrorResponse { error: format!("Invalid request body: {e}") };
+            let resp = ErrorResponse {
+                error: format!("Invalid request body: {e}"),
+            };
             return (
                 "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                 serde_json::to_string(&resp).unwrap_or_default(),
@@ -238,7 +237,9 @@ async fn handle_store(
             )
         }
         Err(e) => {
-            let resp = ErrorResponse { error: format!("Store failed: {e}") };
+            let resp = ErrorResponse {
+                error: format!("Store failed: {e}"),
+            };
             (
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                 serde_json::to_string(&resp).unwrap_or_default(),
@@ -248,14 +249,13 @@ async fn handle_store(
 }
 
 /// Handle a POST /api/recall request.
-async fn handle_recall(
-    engine: &PerspectiveEngine,
-    body: &str,
-) -> (String, String) {
+async fn handle_recall(engine: &PerspectiveEngine, body: &str) -> (String, String) {
     let req: RecallApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
-            let resp = ErrorResponse { error: format!("Invalid request body: {e}") };
+            let resp = ErrorResponse {
+                error: format!("Invalid request body: {e}"),
+            };
             return (
                 "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                 serde_json::to_string(&resp).unwrap_or_default(),
@@ -273,15 +273,21 @@ async fn handle_recall(
                 .zip(result.scores.iter())
                 .map(|(m, score)| {
                     let (id, content, mt) = match m {
-                        perspective_core::types::Memory::Episodic(e) => {
-                            (e.base.id, e.base.content.clone(), memory_type_str(&MemoryType::Episodic))
-                        }
-                        perspective_core::types::Memory::Semantic(e) => {
-                            (e.base.id, e.base.content.clone(), memory_type_str(&MemoryType::Semantic))
-                        }
-                        perspective_core::types::Memory::Procedural(e) => {
-                            (e.base.id, e.base.content.clone(), memory_type_str(&MemoryType::Procedural))
-                        }
+                        perspective_core::types::Memory::Episodic(e) => (
+                            e.base.id,
+                            e.base.content.clone(),
+                            memory_type_str(&MemoryType::Episodic),
+                        ),
+                        perspective_core::types::Memory::Semantic(e) => (
+                            e.base.id,
+                            e.base.content.clone(),
+                            memory_type_str(&MemoryType::Semantic),
+                        ),
+                        perspective_core::types::Memory::Procedural(e) => (
+                            e.base.id,
+                            e.base.content.clone(),
+                            memory_type_str(&MemoryType::Procedural),
+                        ),
                     };
                     RecallMemoryItem {
                         id: id.to_string(),
@@ -300,7 +306,9 @@ async fn handle_recall(
             )
         }
         Err(e) => {
-            let resp = ErrorResponse { error: format!("Recall failed: {e}") };
+            let resp = ErrorResponse {
+                error: format!("Recall failed: {e}"),
+            };
             (
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                 serde_json::to_string(&resp).unwrap_or_default(),
@@ -310,14 +318,13 @@ async fn handle_recall(
 }
 
 /// Handle a POST /api/reflect request.
-async fn handle_reflect(
-    engine: &PerspectiveEngine,
-    body: &str,
-) -> (String, String) {
+async fn handle_reflect(engine: &PerspectiveEngine, body: &str) -> (String, String) {
     let req: ReflectApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
-            let resp = ErrorResponse { error: format!("Invalid request body: {e}") };
+            let resp = ErrorResponse {
+                error: format!("Invalid request body: {e}"),
+            };
             return (
                 "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                 serde_json::to_string(&resp).unwrap_or_default(),
@@ -367,7 +374,8 @@ async fn handle_reflect(
 
     let resp = ReflectApiResponse { synthesis };
     (
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n"
+            .into(),
         serde_json::to_string(&resp).unwrap_or_default(),
     )
 }
@@ -379,7 +387,8 @@ fn handle_health() -> (String, String) {
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
     (
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n"
+            .into(),
         serde_json::to_string(&resp).unwrap_or_default(),
     )
 }
@@ -395,7 +404,9 @@ async fn handle_tenants(engine: &PerspectiveEngine) -> (String, String) {
             )
         }
         Err(e) => {
-            let resp = ErrorResponse { error: format!("Failed to list tenants: {e}") };
+            let resp = ErrorResponse {
+                error: format!("Failed to list tenants: {e}"),
+            };
             (
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                 serde_json::to_string(&resp).unwrap_or_default(),
@@ -437,7 +448,7 @@ fn load_config(path: Option<&str>) -> Config {
             for p in &candidates {
                 if p.exists() {
                     println!("Using config: {}", p.display());
-                    return load_config(Some(&p.to_string_lossy().to_string()));
+                    return load_config(Some(p.to_string_lossy().as_ref()));
                 }
             }
             Config::default()
@@ -602,7 +613,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // ── Determine method and path ──────────────────────
                         let first_line = request.lines().next().unwrap_or("");
                         let parts: Vec<&str> = first_line.split_whitespace().collect();
-                        let method = parts.get(0).copied().unwrap_or("");
+                        let method = parts.first().copied().unwrap_or("");
                         let path = parts.get(1).copied().unwrap_or("/");
 
                         let (status_line, body) = if method == "OPTIONS" {
@@ -612,7 +623,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                  Access-Control-Allow-Origin: *\r\n\
                                  Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
                                  Access-Control-Allow-Headers: Content-Type\r\n\
-                                 Content-Length: 0\r\nConnection: close\r\n\r\n".into(),
+                                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+                                    .into(),
                                 String::new(),
                             )
                         } else if method == "GET" && path == "/api/health" {
@@ -637,7 +649,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             handle_reflect(&engine_for_server, &body_str).await
                         } else if method == "GET" && (path == "/" || path == "/ ") {
                             (
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n".into(),
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                                    .into(),
                                 html_for_server.clone(),
                             )
                         } else {

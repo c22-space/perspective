@@ -1,13 +1,12 @@
+use crate::error::{PerspectiveError, Result};
 use qdrant_edge::{
-    EdgeShard, EdgeConfigBuilder, EdgeVectorParamsBuilder,
-    PointStruct, ScoredPoint, Distance,
-    PointOperations, PointInsertOperations,
-    UpdateOperation, PointId, DEFAULT_VECTOR_NAME, SearchRequest,
+    Distance, EdgeConfigBuilder, EdgeShard, EdgeVectorParamsBuilder, PointId,
+    PointInsertOperations, PointOperations, PointStruct, ScoredPoint, SearchRequest,
+    UpdateOperation, DEFAULT_VECTOR_NAME,
 };
-use uuid::Uuid;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use crate::error::{PerspectiveError, Result};
+use uuid::Uuid;
 
 pub struct QdrantVectorStore {
     shards: std::collections::HashMap<String, Arc<EdgeShard>>,
@@ -45,7 +44,11 @@ impl QdrantVectorStore {
         self.data_dir.join(format!("qdrant_{}", tenant_id))
     }
 
-    fn get_or_create_shard(&mut self, tenant_id: &str, dimensions: usize) -> Result<Arc<EdgeShard>> {
+    fn get_or_create_shard(
+        &mut self,
+        tenant_id: &str,
+        dimensions: usize,
+    ) -> Result<Arc<EdgeShard>> {
         if let Some(shard) = self.shards.get(tenant_id) {
             return Ok(Arc::clone(shard));
         }
@@ -71,7 +74,8 @@ impl QdrantVectorStore {
         };
 
         let shard = Arc::new(shard);
-        self.shards.insert(tenant_id.to_string(), Arc::clone(&shard));
+        self.shards
+            .insert(tenant_id.to_string(), Arc::clone(&shard));
         Ok(shard)
     }
 
@@ -85,11 +89,17 @@ impl QdrantVectorStore {
     ) -> Result<()> {
         let shard = self.get_or_create_shard(tenant_id, dimensions)?;
 
-        let point = PointStruct::new(uuid_to_point_id(id), qdrant_edge::Vectors::from(vector), payload);
+        let point = PointStruct::new(
+            uuid_to_point_id(id),
+            qdrant_edge::Vectors::from(vector),
+            payload,
+        );
 
-        let op = PointOperations::UpsertPoints(PointInsertOperations::PointsList(vec![point.into()]));
+        let op =
+            PointOperations::UpsertPoints(PointInsertOperations::PointsList(vec![point.into()]));
 
-        shard.update(UpdateOperation::PointOperation(op))
+        shard
+            .update(UpdateOperation::PointOperation(op))
             .map_err(|e| PerspectiveError::Qdrant(format!("Upsert failed: {}", e)))?;
 
         Ok(())
@@ -120,20 +130,28 @@ impl QdrantVectorStore {
             score_threshold: None,
         };
 
-        let results: Vec<ScoredPoint> = shard.search(search_request)
+        let results: Vec<ScoredPoint> = shard
+            .search(search_request)
             .map_err(|e| PerspectiveError::Qdrant(format!("Search failed: {}", e)))?;
 
-        Ok(results.into_iter().map(|r| {
-            let id = point_id_to_uuid(&r.id);
-            let payload = r.payload.map(|p| {
-                let mut map = serde_json::Map::new();
-                for (k, v) in p.0 {
-                    map.insert(k.to_string(), v.into());
+        Ok(results
+            .into_iter()
+            .map(|r| {
+                let id = point_id_to_uuid(&r.id);
+                let payload = r.payload.map(|p| {
+                    let mut map = serde_json::Map::new();
+                    for (k, v) in p.0 {
+                        map.insert(k, v);
+                    }
+                    serde_json::Value::Object(map)
+                });
+                SearchResult {
+                    id,
+                    score: r.score,
+                    payload,
                 }
-                serde_json::Value::Object(map)
-            });
-            SearchResult { id, score: r.score, payload }
-        }).collect())
+            })
+            .collect())
     }
 
     pub fn delete(&mut self, tenant_id: &str, id: Uuid, dimensions: usize) -> Result<()> {
@@ -148,7 +166,8 @@ impl QdrantVectorStore {
             ids: vec![uuid_to_point_id(id)],
         };
 
-        shard.update(UpdateOperation::PointOperation(op))
+        shard
+            .update(UpdateOperation::PointOperation(op))
             .map_err(|e| PerspectiveError::Qdrant(format!("Delete failed: {}", e)))?;
 
         Ok(())

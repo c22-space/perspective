@@ -1,10 +1,10 @@
-pub mod types;
 pub mod config;
-pub mod error;
-pub mod store;
-pub mod embedding;
-pub mod decay;
-pub mod engine;
-pub mod extraction;
 pub mod consolidation;
+pub mod decay;
+pub mod embedding;
+pub mod engine;
+pub mod error;
+pub mod extraction;
 pub mod retrieval;
+pub mod store;
+pub mod types;

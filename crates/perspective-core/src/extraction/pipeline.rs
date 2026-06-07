@@ -90,14 +90,8 @@ impl ExtractionPipeline {
                         source_text: text.to_string(),
                         fact: text.to_string(),
                         confidence: 0.0,
-                        entities: extract_entities(text)
-                            .into_iter()
-                            .map(|e| e.name)
-                            .collect(),
-                        relations: extract_relations(
-                            text,
-                            &extract_entities(text),
-                        ),
+                        entities: extract_entities(text).into_iter().map(|e| e.name).collect(),
+                        relations: extract_relations(text, &extract_entities(text)),
                     });
                 }
             }
@@ -262,7 +256,10 @@ fn parse_llm_json(raw: &str) -> Option<(String, f32)> {
     // Try direct parse
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
         let fact = val.get("fact")?.as_str()?.to_string();
-        let confidence = val.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+        let confidence = val
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.5) as f32;
         return Some((fact, confidence));
     }
 
@@ -272,7 +269,10 @@ fn parse_llm_json(raw: &str) -> Option<(String, f32)> {
     let slice = &raw[start..=end];
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(slice) {
         let fact = val.get("fact")?.as_str()?.to_string();
-        let confidence = val.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+        let confidence = val
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.5) as f32;
         return Some((fact, confidence));
     }
 

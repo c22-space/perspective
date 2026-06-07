@@ -1,6 +1,6 @@
-use uuid::Uuid;
 use crate::error::Result;
 use crate::store::vector::QdrantVectorStore;
+use uuid::Uuid;
 
 /// Query the Qdrant vector store for the `limit` most similar embeddings
 /// and return `(id, score)` pairs.

@@ -91,11 +91,9 @@ impl PerspectiveEngine {
             "episodic" => MemoryType::Episodic,
             "semantic" => MemoryType::Semantic,
             "procedural" => MemoryType::Procedural,
-            _ => {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                    "Invalid memory_type: {memory_type}. Use 'episodic', 'semantic', or 'procedural'"
-                )))
-            }
+            _ => return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Invalid memory_type: {memory_type}. Use 'episodic', 'semantic', or 'procedural'"
+            ))),
         };
 
         let req = StoreRequest {
@@ -129,12 +127,7 @@ impl PerspectiveEngine {
     /// Returns:
     ///     List of MemoryResult objects.
     #[pyo3(signature = (tenant_id, query, budget=10))]
-    fn recall(
-        &self,
-        tenant_id: &str,
-        query: &str,
-        budget: usize,
-    ) -> PyResult<Vec<MemoryResult>> {
+    fn recall(&self, tenant_id: &str, query: &str, budget: usize) -> PyResult<Vec<MemoryResult>> {
         let result = self
             .runtime
             .block_on(async { self.inner.recall(tenant_id, query, budget).await })
@@ -185,12 +178,7 @@ impl PerspectiveEngine {
     ///
     /// Returns:
     ///     Dict with keys "episodic", "semantic", "procedural" containing lists of dicts.
-    fn reflect(
-        &self,
-        py: Python<'_>,
-        tenant_id: &str,
-        query: &str,
-    ) -> PyResult<PyObject> {
+    fn reflect(&self, py: Python<'_>, tenant_id: &str, query: &str) -> PyResult<PyObject> {
         let results = self.recall(tenant_id, query, 20)?;
 
         let dict = PyDict::new(py);

@@ -142,7 +142,7 @@ fn extract_is_a_patterns(
 fn extract_concept_after_pattern(text: &str) -> String {
     // Take up to the next punctuation or end of sentence
     let end = text
-        .find(|c: char| c == '.' || c == ',' || c == '!' || c == '?')
+        .find(|c: char| ['.', ',', '!', '?'].contains(&c))
         .unwrap_or(text.len());
     let phrase = text[..end].trim();
 
@@ -157,9 +157,7 @@ fn extract_cooccurrence_relations(
     entities: &[ExtractedEntity],
     relations: &mut Vec<ExtractedRelation>,
 ) {
-    let sentences: Vec<&str> = text
-        .split(|c: char| c == '.' || c == '!' || c == '?')
-        .collect();
+    let sentences: Vec<&str> = text.split(|c: char| ['.', '!', '?'].contains(&c)).collect();
 
     for sentence in &sentences {
         let lower = sentence.to_lowercase();
@@ -227,9 +225,7 @@ mod tests {
     fn test_preposition_pattern() {
         let entities = vec![make_entity("Alice"), make_entity("Acme Inc")];
         let relations = extract_relations("Alice works at Acme Inc.", &entities);
-        let has_works = relations
-            .iter()
-            .any(|r| r.predicate == "works_at");
+        let has_works = relations.iter().any(|r| r.predicate == "works_at");
         assert!(has_works, "expected works_at relation in {relations:?}");
     }
 

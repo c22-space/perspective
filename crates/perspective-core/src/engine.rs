@@ -1,14 +1,14 @@
-use std::sync::{Arc, Mutex};
-use chrono::Utc;
-use uuid::Uuid;
 use crate::config::Config;
+use crate::embedding::Embedder;
+use crate::embedding::LocalEmbedder;
 use crate::error::{PerspectiveError, Result};
-use crate::types::*;
-use crate::store::vector::QdrantVectorStore;
 use crate::store::graph::GraphStore;
 use crate::store::text::TextStore;
-use crate::embedding::LocalEmbedder;
-use crate::embedding::Embedder;
+use crate::store::vector::QdrantVectorStore;
+use crate::types::*;
+use chrono::Utc;
+use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 pub struct PerspectiveEngine {
     pub config: Config,
@@ -39,13 +39,16 @@ impl PerspectiveEngine {
     pub fn new(config: Config) -> Result<Self> {
         // Initialize embedder
         let embedder: Arc<dyn Embedder> = match &config.embedding {
-            crate::config::EmbeddingConfig::Local { model } => {
-                Arc::new(LocalEmbedder::new(model)?)
-            }
-            crate::config::EmbeddingConfig::Api { endpoint, model, api_key: _ } => {
-                return Err(PerspectiveError::Config(
-                    format!("API embeddings not yet implemented (endpoint: {}, model: {})", endpoint, model)
-                ));
+            crate::config::EmbeddingConfig::Local { model } => Arc::new(LocalEmbedder::new(model)?),
+            crate::config::EmbeddingConfig::Api {
+                endpoint,
+                model,
+                api_key: _,
+            } => {
+                return Err(PerspectiveError::Config(format!(
+                    "API embeddings not yet implemented (endpoint: {}, model: {})",
+                    endpoint, model
+                )));
             }
         };
 
@@ -84,7 +87,10 @@ impl PerspectiveEngine {
         let now = Utc::now();
 
         // Generate embedding (blocking call for local model)
-        let embedding = self.embedder.embed(&[&req.content]).await
+        let embedding = self
+            .embedder
+            .embed(&[&req.content])
+            .await
             .map_err(|e| PerspectiveError::Embedding(e.to_string()))?
             .into_iter()
             .next()
@@ -162,17 +168,23 @@ impl PerspectiveEngine {
         });
 
         let dims = self.embedder.dimensions();
-        self.vector_store.lock().map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
+        self.vector_store
+            .lock()
+            .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
             .upsert(&req.tenant_id, id, embedding, payload, dims)?;
 
         // Store in graph
         self.graph_store.save_node(
             &req.tenant_id,
-            &GraphNode::MemoryRef { id, memory_type: req.memory_type },
+            &GraphNode::MemoryRef {
+                id,
+                memory_type: req.memory_type,
+            },
         )?;
 
         // Store in text index
-        self.text_store.add_document(&req.tenant_id, id, &req.content)?;
+        self.text_store
+            .add_document(&req.tenant_id, id, &req.content)?;
 
         // Create temporal edge to most recent memory of same type
         if let Ok(neighbors) = self.graph_store.get_neighbors(&req.tenant_id, id, None) {
@@ -204,15 +216,25 @@ impl PerspectiveEngine {
         let overfetch = budget * self.config.retrieval.vector_overfetch;
 
         // 1. Vector search (embedded)
-        let query_embedding = self.embedder.embed(&[query]).await
+        let query_embedding = self
+            .embedder
+            .embed(&[query])
+            .await
             .map_err(|e| PerspectiveError::Embedding(e.to_string()))?
             .into_iter()
             .next()
             .ok_or_else(|| PerspectiveError::Embedding("No embedding returned".into()))?;
 
-        let vector_results = self.vector_store.lock()
+        let vector_results = self
+            .vector_store
+            .lock()
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
-            .search(tenant_id, query_embedding, overfetch, self.embedder.dimensions())?;
+            .search(
+                tenant_id,
+                query_embedding,
+                overfetch,
+                self.embedder.dimensions(),
+            )?;
 
         // 2. Text search (BM25)
         let text_results = self.text_store.search(tenant_id, query, overfetch)?;
@@ -242,17 +264,26 @@ impl PerspectiveEngine {
         let mut result_scores = Vec::new();
 
         for (id, score) in sorted {
-            if let Ok(search_results) = self.vector_store.lock()
+            if let Ok(search_results) = self
+                .vector_store
+                .lock()
                 .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
-                .search(tenant_id, vec![0.0; self.embedder.dimensions()], 100, self.embedder.dimensions())
+                .search(
+                    tenant_id,
+                    vec![0.0; self.embedder.dimensions()],
+                    100,
+                    self.embedder.dimensions(),
+                )
             {
                 if let Some(sr) = search_results.iter().find(|r| r.id == id) {
                     if let Some(payload) = &sr.payload {
-                        let content = payload.get("content")
+                        let content = payload
+                            .get("content")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let tags: Vec<String> = payload.get("tags")
+                        let tags: Vec<String> = payload
+                            .get("tags")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
 
@@ -289,14 +320,22 @@ impl PerspectiveEngine {
 
     /// Get a specific memory by ID.
     pub async fn get_memory(&self, tenant_id: &str, id: Uuid) -> Result<Memory> {
-        let results = self.vector_store.lock()
+        let results = self
+            .vector_store
+            .lock()
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
-            .search(tenant_id, vec![0.0; self.embedder.dimensions()], 100, self.embedder.dimensions())?;
+            .search(
+                tenant_id,
+                vec![0.0; self.embedder.dimensions()],
+                100,
+                self.embedder.dimensions(),
+            )?;
 
         for sr in results {
             if sr.id == id {
                 if let Some(payload) = &sr.payload {
-                    let content = payload.get("content")
+                    let content = payload
+                        .get("content")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
@@ -328,7 +367,8 @@ impl PerspectiveEngine {
 
     /// Delete a memory from all stores.
     pub async fn delete_memory(&self, tenant_id: &str, id: Uuid) -> Result<()> {
-        self.vector_store.lock()
+        self.vector_store
+            .lock()
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
             .delete(tenant_id, id, self.embedder.dimensions())?;
         self.text_store.delete_document(tenant_id, id)?;
