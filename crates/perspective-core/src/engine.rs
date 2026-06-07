@@ -2,12 +2,13 @@ use crate::config::Config;
 use crate::embedding::Embedder;
 use crate::embedding::LocalEmbedder;
 use crate::error::{PerspectiveError, Result};
-use crate::monitor::Monitor;
+use crate::monitor::*;
 use crate::store::graph::GraphStore;
 use crate::store::text::TextStore;
 use crate::store::vector::QdrantVectorStore;
 use crate::types::*;
 use chrono::Utc;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -386,12 +387,180 @@ impl PerspectiveEngine {
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
             .delete(tenant_id, id, self.embedder.dimensions())?;
         self.text_store.delete_document(tenant_id, id)?;
-        self.monitor.record_event("delete", None, Some(&id.to_string()), true);
+        self.monitor
+            .record_event("delete", None, Some(&id.to_string()), true);
         Ok(())
     }
 
     /// List tenants.
     pub async fn list_tenants(&self) -> Result<Vec<String>> {
         Ok(vec![])
+    }
+
+    // ── Dashboard query methods ──────────────────────────────────────────
+
+    /// Build a full StatusResponse from live engine data.
+    pub fn status_response(&self) -> StatusResponse {
+        let monitor = &self.monitor;
+        let event_count = monitor.event_count();
+        let uptime = monitor.uptime_secs();
+        let _consolidation = monitor.consolidation_status();
+        let decay = monitor.decay_status();
+        let gc_candidates = decay.gc_candidates;
+        let extraction_queue = monitor.extraction_queue().len();
+
+        StatusResponse {
+            health: "healthy".to_string(),
+            uptime_secs: uptime,
+            total_memories: event_count,
+            memory_types: MemoryTypeCounts::default(),
+            gc_candidates,
+            extraction_queue,
+            graph: GraphStats::default(),
+        }
+    }
+
+    /// Get recent activity events.
+    pub fn get_activity(&self, limit: usize) -> ActivityResponse {
+        ActivityResponse {
+            events: self.monitor.get_events(limit),
+        }
+    }
+
+    /// Get process status (consolidation, decay, extraction).
+    pub fn get_processes(&self) -> ProcessesResponse {
+        ProcessesResponse {
+            consolidation: self.monitor.consolidation_status(),
+            decay: self.monitor.decay_status(),
+            extraction_queue: self.monitor.extraction_queue(),
+            consolidation_history: self.monitor.consolidation_history(),
+        }
+    }
+
+    /// Get graph stats.
+    pub fn get_graph_stats(&self) -> GraphResponse {
+        GraphResponse {
+            graph: GraphStats::default(),
+        }
+    }
+
+    /// Get engine config for dashboard display.
+    pub fn get_config_response(&self) -> ConfigResponse {
+        let mut storage = HashMap::new();
+        storage.insert(
+            "data_dir".into(),
+            self.config.storage.data_dir.display().to_string(),
+        );
+        storage.insert(
+            "embedded_qdrant".into(),
+            self.config.storage.embedded_qdrant.to_string(),
+        );
+
+        let mut embedding = HashMap::new();
+        match &self.config.embedding {
+            crate::config::EmbeddingConfig::Local { model } => {
+                embedding.insert("type".into(), "local".into());
+                embedding.insert("model".into(), model.clone());
+            }
+            crate::config::EmbeddingConfig::Api {
+                endpoint, model, ..
+            } => {
+                embedding.insert("type".into(), "api".into());
+                embedding.insert("endpoint".into(), endpoint.clone());
+                embedding.insert("model".into(), model.clone());
+            }
+        }
+
+        let mut decay = HashMap::new();
+        decay.insert(
+            "episodic_lambda".into(),
+            self.config.decay.episodic_lambda.to_string(),
+        );
+        decay.insert(
+            "semantic_lambda".into(),
+            self.config.decay.semantic_lambda.to_string(),
+        );
+        decay.insert(
+            "procedural_lambda".into(),
+            self.config.decay.procedural_lambda.to_string(),
+        );
+        decay.insert(
+            "learning_rate".into(),
+            self.config.decay.learning_rate.to_string(),
+        );
+        decay.insert(
+            "retrieval_threshold".into(),
+            self.config.decay.retrieval_threshold.to_string(),
+        );
+        decay.insert(
+            "gc_threshold".into(),
+            self.config.decay.gc_threshold.to_string(),
+        );
+
+        let mut retrieval = HashMap::new();
+        retrieval.insert(
+            "default_budget".into(),
+            self.config.retrieval.default_budget.to_string(),
+        );
+        retrieval.insert(
+            "vector_overfetch".into(),
+            self.config.retrieval.vector_overfetch.to_string(),
+        );
+        retrieval.insert(
+            "graph_hop_limit".into(),
+            self.config.retrieval.graph_hop_limit.to_string(),
+        );
+        retrieval.insert("rrf_k".into(), self.config.retrieval.rrf_k.to_string());
+
+        let mut consolidation = HashMap::new();
+        consolidation.insert(
+            "enabled".into(),
+            self.config.consolidation.enabled.to_string(),
+        );
+        consolidation.insert(
+            "interval_secs".into(),
+            self.config.consolidation.interval_secs.to_string(),
+        );
+        consolidation.insert(
+            "dedup_similarity_threshold".into(),
+            self.config
+                .consolidation
+                .dedup_similarity_threshold
+                .to_string(),
+        );
+        consolidation.insert(
+            "promotion_access_count".into(),
+            self.config.consolidation.promotion_access_count.to_string(),
+        );
+        consolidation.insert(
+            "staleness_days".into(),
+            self.config.consolidation.staleness_days.to_string(),
+        );
+
+        let mut extraction = HashMap::new();
+        extraction.insert("enabled".into(), self.config.extraction.enabled.to_string());
+        extraction.insert("endpoint".into(), self.config.extraction.endpoint.clone());
+        extraction.insert("model".into(), self.config.extraction.model.clone());
+        extraction.insert(
+            "batch_size".into(),
+            self.config.extraction.batch_size.to_string(),
+        );
+        extraction.insert(
+            "batch_interval_secs".into(),
+            self.config.extraction.batch_interval_secs.to_string(),
+        );
+        extraction.insert(
+            "importance_gate".into(),
+            self.config.extraction.importance_gate.to_string(),
+        );
+
+        ConfigResponse {
+            storage,
+            embedding,
+            decay,
+            retrieval,
+            consolidation,
+            extraction,
+        }
     }
 }

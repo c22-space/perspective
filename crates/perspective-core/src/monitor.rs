@@ -342,7 +342,11 @@ impl Monitor {
 
     /// Get consolidation status.
     pub fn consolidation_status(&self) -> ConsolidationStatus {
-        self.consolidation.lock().ok().map(|s| s.clone()).unwrap_or_default()
+        self.consolidation
+            .lock()
+            .ok()
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
 
     /// Update consolidation status.
@@ -400,7 +404,11 @@ impl Monitor {
 
     /// Get decay status.
     pub fn decay_status(&self) -> DecayStatus {
-        self.decay.lock().ok().map(|s| s.clone()).unwrap_or_default()
+        self.decay
+            .lock()
+            .ok()
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
 
     /// Update decay status.
@@ -412,7 +420,11 @@ impl Monitor {
 
     /// Get extraction queue.
     pub fn extraction_queue(&self) -> Vec<ExtractionItem> {
-        self.extraction_queue.lock().ok().map(|q| q.clone()).unwrap_or_default()
+        self.extraction_queue
+            .lock()
+            .ok()
+            .map(|q| q.clone())
+            .unwrap_or_default()
     }
 
     /// Update extraction queue.

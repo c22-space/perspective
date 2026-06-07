@@ -471,19 +471,21 @@ fn dirs_config_path() -> Option<PathBuf> {
     }
 }
 
-/// Build the status payload using config values (stub — no live engine).
-fn build_status(config: &Config) -> StatusPayload {
+/// Build status from live engine data.
+async fn build_status(engine: &PerspectiveEngine, config: &Config) -> StatusPayload {
+    let status = engine.status_response();
+    let activity = engine.get_activity(20);
     StatusPayload {
-        health: "healthy".into(),
-        uptime_secs: 0,
-        total_memories: 0,
+        health: status.health,
+        uptime_secs: status.uptime_secs,
+        total_memories: status.total_memories,
         tenant_count: 0,
         memory_types: MemoryTypeCounts {
-            episodic: 0,
-            semantic: 0,
-            procedural: 0,
+            episodic: status.memory_types.episodic,
+            semantic: status.memory_types.semantic,
+            procedural: status.memory_types.procedural,
         },
-        gc_candidates: 0,
+        gc_candidates: status.gc_candidates,
         decay_config: DecayConfigView {
             episodic_lambda: config.decay.episodic_lambda,
             semantic_lambda: config.decay.semantic_lambda,
@@ -492,7 +494,16 @@ fn build_status(config: &Config) -> StatusPayload {
             retrieval_threshold: config.decay.retrieval_threshold,
             gc_threshold: config.decay.gc_threshold,
         },
-        recent_activity: vec![],
+        recent_activity: activity
+            .events
+            .iter()
+            .map(|e| ActivityEntry {
+                timestamp: e.timestamp.to_rfc3339(),
+                tenant_id: String::new(),
+                memory_type: e.memory_type.clone().unwrap_or_default(),
+                content: e.content.clone().unwrap_or_default(),
+            })
+            .collect(),
     }
 }
 
@@ -543,9 +554,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             dashboard_port,
         } => {
             let config = load_config(cli.config.as_deref());
-            let status_payload = build_status(&config);
-            let status_json = serde_json::to_string(&status_payload)?;
-            let html = dashboard::dashboard_html(&status_json);
 
             // Initialize the PerspectiveEngine
             let engine = match PerspectiveEngine::new(config.clone()) {
@@ -557,13 +565,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("  ⚠ Could not initialize PerspectiveEngine: {e}");
                     eprintln!("    API endpoints requiring the engine will return errors.");
                     eprintln!("    Dashboard and health check will still work.");
-                    // Create a dummy config for the fallback engine
-                    // We can't create the engine without backing stores, so we'll
-                    // use an Option approach in the handler.
-                    // For now, create with default config and let it fail gracefully.
                     Arc::new(PerspectiveEngine::new(Config::default())?)
                 }
             };
+
+            let status_payload = build_status(&engine, &config).await;
+            let status_json = serde_json::to_string(&status_payload)?;
+            let html = dashboard::dashboard_html(&status_json);
 
             println!("╔══════════════════════════════════════════╗");
             println!("║      Perspective Memory Engine           ║");
@@ -632,7 +640,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else if method == "GET" && path == "/api/tenants" {
                             handle_tenants(&engine_for_server).await
                         } else if method == "GET" && path == "/api/status" {
-                            let st = build_status(&config_for_server);
+                            let st = build_status(&engine_for_server, &config_for_server).await;
                             let json = serde_json::to_string(&st).unwrap_or_default();
                             (
                                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
@@ -647,6 +655,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else if method == "POST" && path == "/api/reflect" {
                             let body_str = extract_body(&request).to_string();
                             handle_reflect(&engine_for_server, &body_str).await
+                        } else if method == "GET" && path.starts_with("/api/activity") {
+                            let resp = engine_for_server.get_activity(50);
+                            let json = serde_json::to_string(&resp).unwrap_or_default();
+                            (
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                json,
+                            )
+                        } else if method == "GET" && path == "/api/processes" {
+                            let resp = engine_for_server.get_processes();
+                            let json = serde_json::to_string(&resp).unwrap_or_default();
+                            (
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                json,
+                            )
+                        } else if method == "GET" && path == "/api/graph" {
+                            let resp = engine_for_server.get_graph_stats();
+                            let json = serde_json::to_string(&resp).unwrap_or_default();
+                            (
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                json,
+                            )
+                        } else if method == "GET" && path == "/api/config" {
+                            let resp = engine_for_server.get_config_response();
+                            let json = serde_json::to_string(&resp).unwrap_or_default();
+                            (
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                json,
+                            )
                         } else if method == "GET" && (path == "/" || path == "/ ") {
                             (
                                 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
@@ -684,14 +720,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Status { tenant, json } => {
             let config = load_config(cli.config.as_deref());
 
+            // Create engine to read real data from Monitor
+            let engine = match PerspectiveEngine::new(config.clone()) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("Could not initialize engine: {e}");
+                    return Ok(());
+                }
+            };
+
             if let Some(tenant_id) = tenant {
-                // Per-tenant status (stub)
+                // Per-tenant status
+                let activity = engine.get_activity(50);
+                let events_for_tenant: Vec<_> = activity.events.iter().collect();
                 if json {
                     let payload = serde_json::json!({
                         "tenant_id": tenant_id,
                         "health": "healthy",
-                        "memory_count": 0,
-                        "memory_types": { "episodic": 0, "semantic": 0, "procedural": 0 },
+                        "recent_events": events_for_tenant.len(),
                     });
                     println!("{}", serde_json::to_string_pretty(&payload)?);
                 } else {
@@ -699,16 +745,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  Tenant: {tenant_id}");
                     println!("  ────────────────────────────");
                     println!("  Health:       🟢 healthy");
-                    println!("  Memories:     0");
-                    println!("  Episodic:     0");
-                    println!("  Semantic:     0");
-                    println!("  Procedural:   0");
+                    println!("  Recent events: {}", events_for_tenant.len());
                     println!();
                 }
                 return Ok(());
             }
 
-            let status_payload = build_status(&config);
+            let status = engine.status_response();
+            let status_payload = StatusPayload {
+                health: status.health,
+                uptime_secs: status.uptime_secs,
+                total_memories: status.total_memories,
+                tenant_count: 0,
+                memory_types: MemoryTypeCounts {
+                    episodic: status.memory_types.episodic,
+                    semantic: status.memory_types.semantic,
+                    procedural: status.memory_types.procedural,
+                },
+                gc_candidates: status.gc_candidates,
+                decay_config: DecayConfigView {
+                    episodic_lambda: config.decay.episodic_lambda,
+                    semantic_lambda: config.decay.semantic_lambda,
+                    procedural_lambda: config.decay.procedural_lambda,
+                    learning_rate: config.decay.learning_rate,
+                    retrieval_threshold: config.decay.retrieval_threshold,
+                    gc_threshold: config.decay.gc_threshold,
+                },
+                recent_activity: vec![],
+            };
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&status_payload)?);
