@@ -35,11 +35,13 @@ export default function Overview() {
 
   const typeData = status
     ? [
-        { type: 'Episodic', count: status.memory_counts.episodic },
-        { type: 'Semantic', count: status.memory_counts.semantic },
-        { type: 'Procedural', count: status.memory_counts.procedural },
+        { type: 'Episodic', count: status.memory_types.episodic },
+        { type: 'Semantic', count: status.memory_types.semantic },
+        { type: 'Procedural', count: status.memory_types.procedural },
       ]
     : [];
+
+  const events = activity?.events ?? [];
 
   const eventColors: Record<string, string> = {
     store: 'bg-emerald-500/20 text-emerald-400',
@@ -68,7 +70,7 @@ export default function Overview() {
 
       {/* Stat cards */}
       <div className="grid grid-cols-4 gap-4">
-        <StatCard label="Health" value="Running" />
+        <StatCard label="Health" value={status?.health ?? '—'} />
         <StatCard
           label="Uptime"
           value={status ? formatDuration(status.uptime_secs) : '—'}
@@ -76,12 +78,11 @@ export default function Overview() {
         <StatCard
           label="Total Memories"
           value={status?.total_memories ?? 0}
-          sub={`across ${status?.tenants?.length ?? 0} tenants`}
+          sub={`${status?.tenant_count ?? 0} tenants`}
         />
         <StatCard
           label="GC Candidates"
           value={status?.gc_candidates ?? 0}
-          sub={`${status?.extraction_queue_size ?? 0} in extraction queue`}
         />
       </div>
 
@@ -105,11 +106,11 @@ export default function Overview() {
         <h3 className="text-sm font-medium text-zinc-400 mb-3">Recent Activity</h3>
         {actErr && <p className="text-red-400 text-xs mb-2">{actErr}</p>}
         <div className="space-y-1 max-h-96 overflow-auto">
-          {activity && activity.length === 0 && (
+          {events.length === 0 && (
             <p className="text-zinc-600 text-sm py-4 text-center">No activity yet</p>
           )}
-          {activity?.map((ev) => (
-            <div key={ev.id} className="flex items-center gap-3 py-1.5 text-sm">
+          {events.map((ev, i) => (
+            <div key={i} className="flex items-center gap-3 py-1.5 text-sm">
               <span className="text-xs text-zinc-600 w-16 shrink-0">{formatTime(ev.timestamp)}</span>
               <span
                 className={`px-2 py-0.5 rounded text-xs font-medium ${

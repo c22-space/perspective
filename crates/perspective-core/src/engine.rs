@@ -563,4 +563,78 @@ impl PerspectiveEngine {
             extraction,
         }
     }
+
+    /// List memories from the text index for a tenant.
+    /// Used by the dashboard /api/memories endpoint.
+    pub fn list_memories(
+        &self,
+        tenant_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> MemoriesResponse {
+        let text_results = if query.trim().is_empty() {
+            // Empty query: can't use Tantivy wildcard, return empty
+            vec![]
+        } else {
+            match self.text_store.search(tenant_id, query, limit) {
+                Ok(r) => r,
+                Err(_) => vec![],
+            }
+        };
+
+        let mut memories = Vec::new();
+        for tr in text_results {
+            // Load full memory from vector store payload
+            if let Ok(mut vs) = self.vector_store.lock().map_err(|e| PerspectiveError::Qdrant(e.to_string())) {
+                let results = vs
+                    .search(
+                        tenant_id,
+                        vec![0.0; self.embedder.dimensions()],
+                        200,
+                        self.embedder.dimensions(),
+                    )
+                    .unwrap_or_default();
+
+                if let Some(sr) = results.iter().find(|s| s.id == tr.id) {
+                    let content = sr
+                        .payload
+                        .as_ref()
+                        .and_then(|p| p.get("content"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let mem_type = sr
+                        .payload
+                        .as_ref()
+                        .and_then(|p| p.get("memory_type"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("episodic")
+                        .to_string();
+                    let tags: Vec<String> = sr
+                        .payload
+                        .as_ref()
+                        .and_then(|p| p.get("tags"))
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+
+                    memories.push(MemorySummary {
+                        id: tr.id.to_string(),
+                        memory_type: mem_type,
+                        content,
+                        tags,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                        importance: None,
+                        stability: None,
+                        access_count: 0,
+                        last_accessed: Utc::now(),
+                        source_session: None,
+                    });
+                }
+            }
+        }
+
+        MemoriesResponse { memories }
+    }
 }
