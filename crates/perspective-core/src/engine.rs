@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::embedding::Embedder;
 use crate::embedding::LocalEmbedder;
 use crate::error::{PerspectiveError, Result};
+use crate::monitor::Monitor;
 use crate::store::graph::GraphStore;
 use crate::store::text::TextStore;
 use crate::store::vector::QdrantVectorStore;
@@ -16,6 +17,7 @@ pub struct PerspectiveEngine {
     graph_store: Arc<GraphStore>,
     text_store: Arc<TextStore>,
     embedder: Arc<dyn Embedder>,
+    pub monitor: Arc<Monitor>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,12 +66,15 @@ impl PerspectiveEngine {
         let text_path = config.storage.data_dir.join("tantivy");
         let text_store = Arc::new(TextStore::new(&text_path)?);
 
+        let monitor = Arc::new(Monitor::new(&config.storage.data_dir));
+
         Ok(Self {
             config,
             vector_store,
             graph_store,
             text_store,
             embedder,
+            monitor,
         })
     }
 
@@ -202,6 +207,13 @@ impl PerspectiveEngine {
             }
         }
 
+        self.monitor.record_event(
+            "store",
+            Some(&req.memory_type.to_string()),
+            Some(&req.content),
+            true,
+        );
+
         Ok(id)
     }
 
@@ -312,6 +324,8 @@ impl PerspectiveEngine {
             result_scores.push(score);
         }
 
+        self.monitor.record_event("recall", None, Some(query), true);
+
         Ok(RecallResult {
             memories,
             scores: result_scores,
@@ -372,6 +386,7 @@ impl PerspectiveEngine {
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
             .delete(tenant_id, id, self.embedder.dimensions())?;
         self.text_store.delete_document(tenant_id, id)?;
+        self.monitor.record_event("delete", None, Some(&id.to_string()), true);
         Ok(())
     }
 

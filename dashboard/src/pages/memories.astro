@@ -1,0 +1,157 @@
+---
+import Dashboard from '../layouts/Dashboard.astro';
+---
+
+<Dashboard title="Memories" active="/memories">
+  <h1 class="text-2xl font-semibold mb-6">Memories</h1>
+
+  {/* Search bar */}
+  <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 mb-6">
+    <div class="flex gap-3">
+      <input
+        type="text"
+        id="search-input"
+        placeholder="Search memories..."
+        class="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+      />
+      <select id="type-filter" class="bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-sm text-white focus:outline-none">
+        <option value="all">All Types</option>
+        <option value="episodic">Episodic</option>
+        <option value="semantic">Semantic</option>
+        <option value="procedural">Procedural</option>
+      </select>
+      <button id="search-btn" class="bg-zinc-700 hover:bg-zinc-600 rounded-lg px-4 py-2 text-sm transition-colors">Search</button>
+    </div>
+  </div>
+
+  {/* Results */}
+  <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+    <div class="flex justify-between items-center mb-4">
+      <div class="text-sm text-zinc-500" id="result-count">Loading...</div>
+    </div>
+    <div id="memory-list" class="space-y-3">
+      <div class="text-sm text-zinc-600 text-center py-8">Enter a search query or browse all memories</div>
+    </div>
+  </div>
+
+  {/* Memory detail modal */}
+  <div id="detail-modal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+      <div class="flex justify-between items-start mb-4">
+        <h3 class="text-lg font-semibold">Memory Detail</h3>
+        <button id="close-modal" class="text-zinc-500 hover:text-white text-xl">&times;</button>
+      </div>
+      <div id="detail-content" class="space-y-4"></div>
+    </div>
+  </div>
+</Dashboard>
+
+<script is:inline>
+  const API = window.__PERSPECTIVE_API__ || 'http://localhost:8080';
+  let allMemories = [];
+
+  const TYPE_COLORS = { episodic: 'text-blue-400 bg-blue-500/10', semantic: 'text-purple-400 bg-purple-500/10', procedural: 'text-amber-400 bg-amber-500/10' };
+  const TYPE_BORDER = { episodic: 'border-blue-500/30', semantic: 'border-purple-500/30', procedural: 'border-amber-500/30' };
+
+  function fmtTime(ts) {
+    if (!ts) return '--';
+    return new Date(ts).toLocaleString();
+  }
+
+  function renderMemories(memories) {
+    allMemories = memories;
+    document.getElementById('result-count').textContent = `${memories.length} memories`;
+    const list = document.getElementById('memory-list');
+
+    if (!memories.length) {
+      list.innerHTML = '<div class="text-sm text-zinc-600 text-center py-8">No memories found</div>';
+      return;
+    }
+
+    list.innerHTML = memories.map((m, i) => {
+      const typeColor = TYPE_COLORS[m.memory_type] || 'text-zinc-400 bg-zinc-500/10';
+      const borderColor = TYPE_BORDER[m.memory_type] || 'border-zinc-500/30';
+      const tags = (m.tags || []).map(t => `<span class="px-2 py-0.5 text-xs rounded bg-zinc-800 text-zinc-400">${t}</span>`).join('');
+      return `<div class="border ${borderColor} rounded-lg p-4 hover:bg-zinc-800/30 cursor-pointer transition-colors" data-idx="${i}">
+        <div class="flex items-start justify-between mb-2">
+          <span class="px-2 py-0.5 text-xs rounded ${typeColor}">${m.memory_type || 'unknown'}</span>
+          <span class="text-xs text-zinc-600">${fmtTime(m.created_at)}</span>
+        </div>
+        <p class="text-sm text-zinc-200 mb-2">${(m.content || '').substring(0, 200)}${(m.content || '').length > 200 ? '...' : ''}</p>
+        <div class="flex gap-2 flex-wrap">${tags}</div>
+      </div>`;
+    }).join('');
+
+    list.querySelectorAll('[data-idx]').forEach(el => {
+      el.addEventListener('click', () => showDetail(allMemories[parseInt(el.dataset.idx)]));
+    });
+  }
+
+  function showDetail(m) {
+    const modal = document.getElementById('detail-modal');
+    const content = document.getElementById('detail-content');
+    content.innerHTML = `
+      <div class="flex gap-2 items-center">
+        <span class="px-2 py-0.5 text-xs rounded ${TYPE_COLORS[m.memory_type] || 'text-zinc-400 bg-zinc-500/10'}">${m.memory_type}</span>
+        <span class="text-xs text-zinc-500 font-mono">${m.id || '--'}</span>
+      </div>
+      <div class="bg-zinc-800 rounded-lg p-4">
+        <p class="text-sm text-zinc-200">${m.content || ''}</p>
+      </div>
+      <div class="grid grid-cols-2 gap-4 text-sm">
+        <div><span class="text-zinc-500">Created:</span> <span>${fmtTime(m.created_at)}</span></div>
+        <div><span class="text-zinc-500">Updated:</span> <span>${fmtTime(m.updated_at)}</span></div>
+        <div><span class="text-zinc-500">Importance:</span> <span>${m.importance != null ? m.importance.toFixed(3) : '--'}</span></div>
+        <div><span class="text-zinc-500">Stability:</span> <span>${m.stability != null ? m.stability.toFixed(2) : '--'}</span></div>
+        <div><span class="text-zinc-500">Access Count:</span> <span>${m.access_count || 0}</span></div>
+        <div><span class="text-zinc-500">Last Accessed:</span> <span>${fmtTime(m.last_accessed)}</span></div>
+      </div>
+      <div>
+        <div class="text-zinc-500 text-sm mb-1">Tags</div>
+        <div class="flex gap-2 flex-wrap">${(m.tags || []).map(t => `<span class="px-2 py-0.5 text-xs rounded bg-zinc-800 text-zinc-400">${t}</span>`).join('') || '<span class="text-zinc-600 text-sm">none</span>'}</div>
+      </div>
+      ${m.source_session ? `<div><span class="text-zinc-500 text-sm">Session:</span> <span class="text-xs font-mono text-zinc-400">${m.source_session}</span></div>` : ''}
+    `;
+    modal.classList.remove('hidden');
+  }
+
+  document.getElementById('close-modal').addEventListener('click', () => {
+    document.getElementById('detail-modal').classList.add('hidden');
+  });
+  document.getElementById('detail-modal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) document.getElementById('detail-modal').classList.add('hidden');
+  });
+
+  async function doSearch() {
+    const query = document.getElementById('search-input').value;
+    const typeFilter = document.getElementById('type-filter').value;
+    const budget = 50;
+    try {
+      let url;
+      if (query) {
+        url = `${API}/api/memories?q=${encodeURIComponent(query)}&budget=${budget}`;
+      } else {
+        url = `${API}/api/memories?budget=${budget}`;
+      }
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+      let memories = data.memories || [];
+      if (typeFilter !== 'all') {
+        memories = memories.filter(m => m.memory_type === typeFilter);
+      }
+      renderMemories(memories);
+    } catch (e) {
+      document.getElementById('result-count').textContent = 'Failed to load memories';
+    }
+  }
+
+  document.getElementById('search-btn').addEventListener('click', doSearch);
+  document.getElementById('search-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doSearch();
+  });
+  document.getElementById('type-filter').addEventListener('change', doSearch);
+
+  // Load initial memories
+  doSearch();
+</script>

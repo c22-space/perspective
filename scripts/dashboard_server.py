@@ -124,8 +124,47 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(DASHBOARD_HTML.encode())
         elif self.path == '/api/status':
             self._handle_status()
+        elif self.path == '/api/activity':
+            self._handle_activity()
         else:
             self.send_error(404)
+
+    def _handle_activity(self):
+        try:
+            import sqlite3
+            _data_dir = os.path.expanduser(os.environ.get('PERSPECTIVE_DATA_DIR', '~/.perspective/data'))
+            db_path = os.path.join(_data_dir, 'activity.db')
+            if not os.path.exists(db_path):
+                data = {"events": [], "total_events": 0}
+            else:
+                conn = sqlite3.connect(db_path)
+                cursor = conn.execute(
+                    "SELECT id, timestamp, operation, memory_type, content, success "
+                    "FROM events ORDER BY id DESC LIMIT 200"
+                )
+                events = []
+                for row in cursor:
+                    events.append({
+                        "id": row[0],
+                        "timestamp": row[1],
+                        "operation": row[2],
+                        "memory_type": row[3],
+                        "content": row[4],
+                        "success": bool(row[5]),
+                    })
+                total = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+                conn.close()
+                data = {"events": events, "total_events": total}
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+        except Exception as e:
+            data = {"error": str(e), "events": [], "total_events": 0}
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
 
     def _handle_status(self):
         try:
