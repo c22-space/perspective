@@ -1,6 +1,7 @@
 name: perspective
 version: 0.1.0
-description: "Perspective memory engine for Hermes"
+description: "Perspective memory engine for Hermes — graph+vector memory with Ebbinghaus decay, episodic/semantic/procedural memory, and BM25+vector hybrid retrieval"
 author: c22
 license: MIT
 memory_provider: true
+provider_class: PerspectiveProvider

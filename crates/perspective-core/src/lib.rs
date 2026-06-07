@@ -3,4 +3,8 @@ pub mod config;
 pub mod error;
 pub mod store;
 pub mod embedding;
+pub mod decay;
 pub mod engine;
+pub mod extraction;
+pub mod consolidation;
+pub mod retrieval;

@@ -125,4 +125,13 @@ impl Memory {
             Memory::Procedural(m) => m.stability,
         }
     }
+
+    /// Returns the timestamp of the last access (read or use) for this memory.
+    pub fn last_accessed(&self) -> DateTime<Utc> {
+        match self {
+            Memory::Episodic(m) => m.last_accessed,
+            Memory::Semantic(m) => m.last_accessed,
+            Memory::Procedural(m) => m.last_used,
+        }
+    }
 }
