@@ -1,13 +1,13 @@
 import { useProcesses } from '../hooks';
 
-function StatusDot({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    running: 'bg-emerald-400',
-    idle: 'bg-zinc-500',
-    error: 'bg-red-400',
-    completed: 'bg-blue-400',
-  };
-  return <span className={`inline-block w-2 h-2 rounded-full ${colors[status] ?? 'bg-zinc-500'}`} />;
+function StatusDot({ active }: { active: boolean }) {
+  return (
+    <span
+      className={`inline-block w-2 h-2 rounded-full ${
+        active ? 'bg-emerald-400' : 'bg-zinc-500'
+      }`}
+    />
+  );
 }
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
@@ -35,6 +35,8 @@ export default function Processes() {
   if (error) return <div className="text-red-400">{error}</div>;
   if (!data) return null;
 
+  const qLen = data.extraction_queue.length;
+
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-bold">Background Processes</h2>
@@ -42,38 +44,42 @@ export default function Processes() {
       <div className="grid grid-cols-3 gap-4">
         <SectionCard title="Consolidation">
           <div className="flex items-center gap-2 mb-3">
-            <StatusDot status={data.consolidation.status} />
-            <span className="text-sm capitalize">{data.consolidation.status}</span>
+            <StatusDot active={data.consolidation.running} />
+            <span className="text-sm">
+              {data.consolidation.running ? 'Running' : 'Idle'}
+            </span>
           </div>
           <KV label="Last run" value={data.consolidation.last_run} />
           <KV label="Next run" value={data.consolidation.next_run} />
           <KV label="Items processed" value={data.consolidation.items_processed} />
-          <KV label="Items deduped" value={data.consolidation.items_deduped} />
-          <KV label="Items promoted" value={data.consolidation.items_promoted} />
+          <KV label="Merges" value={data.consolidation.merges} />
+          <KV label="Promotions" value={data.consolidation.promotions} />
         </SectionCard>
 
         <SectionCard title="Extraction Queue">
           <div className="flex items-center gap-2 mb-3">
-            <StatusDot status={data.extraction.processing > 0 ? 'running' : 'idle'} />
+            <StatusDot active={qLen > 0} />
             <span className="text-sm">
-              {data.extraction.processing > 0 ? 'Processing' : 'Idle'}
+              {qLen > 0 ? `${qLen} pending` : 'Empty'}
             </span>
           </div>
-          <KV label="Queue size" value={data.extraction.queue_size} />
-          <KV label="Processing" value={data.extraction.processing} />
-          <KV label="Completed" value={data.extraction.completed} />
+          {qLen === 0 && (
+            <p className="text-zinc-600 text-xs py-4 text-center">No items in queue</p>
+          )}
         </SectionCard>
 
         <SectionCard title="Decay & GC">
           <div className="flex items-center gap-2 mb-3">
-            <StatusDot status={data.decay.gc_candidates > 0 ? 'running' : 'idle'} />
+            <StatusDot active={data.decay.gc_candidates > 0} />
             <span className="text-sm">
-              {data.decay.gc_candidates > 0 ? `${data.decay.gc_candidates} candidates` : 'No candidates'}
+              {data.decay.gc_candidates > 0
+                ? `${data.decay.gc_candidates} candidates`
+                : 'No candidates'}
             </span>
           </div>
           <KV label="GC candidates" value={data.decay.gc_candidates} />
-          <KV label="Avg stability" value={data.decay.avg_stability.toFixed(2)} />
-          <KV label="Last GC" value={data.decay.last_gc} />
+          <KV label="Items collected" value={data.decay.items_collected} />
+          <KV label="Last GC" value={data.decay.last_gc_run} />
         </SectionCard>
       </div>
     </div>

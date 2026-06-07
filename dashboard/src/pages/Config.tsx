@@ -9,6 +9,18 @@ function KV({ label, value }: { label: string; value: string | number | null }) 
   );
 }
 
+function Section({ title, entries }: { title: string; entries: [string, string][] }) {
+  const sorted = [...entries].sort(([a], [b]) => a.localeCompare(b));
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <h3 className="text-sm font-medium text-zinc-400 mb-3">{title}</h3>
+      {sorted.map(([k, v]) => (
+        <KV key={k} label={k} value={v} />
+      ))}
+    </div>
+  );
+}
+
 export default function Config() {
   const { data, error, loading } = useConfig();
 
@@ -21,40 +33,30 @@ export default function Config() {
       <h2 className="text-xl font-bold">Configuration</h2>
 
       <div className="grid grid-cols-2 gap-4">
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-          <h3 className="text-sm font-medium text-zinc-400 mb-3">Storage Paths</h3>
-          <KV label="Data directory" value={data.data_dir} />
-          <KV label="Qdrant" value={data.qdrant_path} />
-          <KV label="Tantivy" value={data.tantivy_path} />
-          <KV label="Redb" value={data.redb_path} />
-        </div>
-
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-          <h3 className="text-sm font-medium text-zinc-400 mb-3">Embedding</h3>
-          <KV label="Model" value={data.embedding_model} />
-          <KV label="Dimension" value={data.embedding_dim} />
-        </div>
-
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-          <h3 className="text-sm font-medium text-zinc-400 mb-3">Decay (Ebbinghaus)</h3>
-          <KV label="Episodic half-life" value={`${data.decay.episodic_half_life_days}d`} />
-          <KV label="Semantic half-life" value={`${data.decay.semantic_half_life_days}d`} />
-          <KV label="Procedural half-life" value={`${data.decay.procedural_half_life_days}d`} />
-        </div>
-
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-          <h3 className="text-sm font-medium text-zinc-400 mb-3">Consolidation</h3>
-          <KV label="Interval" value={`${data.consolidation.interval_secs}s`} />
-          <KV label="Batch size" value={data.consolidation.batch_size} />
-          <KV label="Dedup threshold" value={data.consolidation.dedup_threshold} />
-        </div>
-
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 col-span-2">
-          <h3 className="text-sm font-medium text-zinc-400 mb-3">Extraction</h3>
-          <KV label="Provider" value={data.extraction.provider} />
-          <KV label="Model" value={data.extraction.model} />
-          <KV label="Batch size" value={data.extraction.batch_size} />
-        </div>
+        <Section
+          title="Storage"
+          entries={Object.entries(data.storage)}
+        />
+        <Section
+          title="Embedding"
+          entries={Object.entries(data.embedding)}
+        />
+        <Section
+          title="Decay"
+          entries={Object.entries(data.decay)}
+        />
+        <Section
+          title="Retrieval"
+          entries={Object.entries(data.retrieval)}
+        />
+        <Section
+          title="Consolidation"
+          entries={Object.entries(data.consolidation)}
+        />
+        <Section
+          title="Extraction"
+          entries={Object.entries(data.extraction)}
+        />
       </div>
     </div>
   );

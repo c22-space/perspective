@@ -48,6 +48,8 @@ export default function Graph() {
   if (error) return <div className="text-red-400">{error}</div>;
   if (!data) return null;
 
+  const g = data.graph;
+
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-bold">Graph</h2>
@@ -55,21 +57,21 @@ export default function Graph() {
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 text-center">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">Total Nodes</p>
-          <p className="text-3xl font-bold mt-1">{data.nodes.total}</p>
+          <p className="text-3xl font-bold mt-1">{g.total_nodes}</p>
         </div>
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 text-center">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">Total Edges</p>
-          <p className="text-3xl font-bold mt-1">{data.edges.total}</p>
+          <p className="text-3xl font-bold mt-1">{g.total_edges}</p>
         </div>
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 text-center">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">Communities</p>
-          <p className="text-3xl font-bold mt-1">{data.communities}</p>
+          <p className="text-3xl font-bold mt-1">{g.communities}</p>
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <Section title="Nodes by Type" data={data.nodes.by_type} />
-        <Section title="Edges by Type" data={data.edges.by_type} />
+        <Section title="Nodes by Type" data={g.node_types} />
+        <Section title="Edges by Type" data={g.edge_types} />
       </div>
     </div>
   );

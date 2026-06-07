@@ -1,16 +1,17 @@
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 export interface StatusResponse {
+  health: string;
   uptime_secs: number;
   total_memories: number;
-  memory_counts: { episodic: number; semantic: number; procedural: number };
+  tenant_count: number;
+  memory_types: { episodic: number; semantic: number; procedural: number };
   gc_candidates: number;
-  extraction_queue_size: number;
-  tenants: string[];
+  decay_config: Record<string, number>;
+  recent_activity: ActivityEvent[];
 }
 
 export interface ActivityEvent {
-  id: number;
   tenant: string;
   event_type: string;
   memory_type: string | null;
@@ -21,29 +22,34 @@ export interface ActivityEvent {
 
 export interface ProcessStatus {
   consolidation: {
-    status: string;
+    running: boolean;
     last_run: string | null;
     next_run: string | null;
     items_processed: number;
-    items_deduped: number;
-    items_promoted: number;
-  };
-  extraction: {
-    queue_size: number;
-    processing: number;
-    completed: number;
+    merges: number;
+    promotions: number;
   };
   decay: {
     gc_candidates: number;
-    avg_stability: number;
-    last_gc: string | null;
+    last_gc_run: string | null;
+    items_collected: number;
+    avg_stability_episodic: number | null;
+    avg_stability_semantic: number | null;
   };
+  extraction_queue: unknown[];
+  consolidation_history: unknown[];
 }
 
 export interface GraphStats {
-  nodes: { total: number; by_type: Record<string, number> };
-  edges: { total: number; by_type: Record<string, number> };
-  communities: number;
+  graph: {
+    total_nodes: number;
+    total_edges: number;
+    communities: number;
+    avg_connectivity: number;
+    node_types: Record<string, number>;
+    edge_types: Record<string, number>;
+    recent_edges: unknown[];
+  };
 }
 
 export interface Memory {
@@ -53,7 +59,9 @@ export interface Memory {
   tags: string[];
   created_at: string;
   updated_at: string;
-  score?: number;
+  importance?: number;
+  stability?: number;
+  access_count?: number;
 }
 
 export interface MemoriesResponse {
@@ -62,27 +70,12 @@ export interface MemoriesResponse {
 }
 
 export interface ConfigResponse {
-  data_dir: string;
-  qdrant_path: string;
-  tantivy_path: string;
-  redb_path: string;
-  embedding_model: string;
-  embedding_dim: number;
-  decay: {
-    episodic_half_life_days: number;
-    semantic_half_life_days: number;
-    procedural_half_life_days: number;
-  };
-  consolidation: {
-    interval_secs: number;
-    batch_size: number;
-    dedup_threshold: number;
-  };
-  extraction: {
-    provider: string;
-    model: string;
-    batch_size: number;
-  };
+  storage: Record<string, string>;
+  embedding: Record<string, string>;
+  decay: Record<string, string>;
+  retrieval: Record<string, string>;
+  consolidation: Record<string, string>;
+  extraction: Record<string, string>;
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -93,7 +86,8 @@ async function fetchJson<T>(path: string): Promise<T> {
 
 export const api = {
   getStatus: () => fetchJson<StatusResponse>('/api/status'),
-  getActivity: (limit = 50) => fetchJson<ActivityEvent[]>(`/api/activity?limit=${limit}`),
+  getActivity: (limit = 50) =>
+    fetchJson<{ events: ActivityEvent[] }>(`/api/activity?limit=${limit}`),
   getProcesses: () => fetchJson<ProcessStatus>('/api/processes'),
   getGraph: () => fetchJson<GraphStats>('/api/graph'),
   getMemories: (q?: string, limit = 50) => {

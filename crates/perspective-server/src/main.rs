@@ -1,4 +1,5 @@
 mod dashboard;
+mod static_files;
 
 use clap::{Parser, Subcommand};
 use perspective_core::config::Config;
@@ -42,6 +43,10 @@ enum Commands {
         /// HTTP dashboard port (0 to disable)
         #[arg(long, default_value = "8080")]
         dashboard_port: u16,
+
+        /// Path to React dashboard dist directory (for serving static files)
+        #[arg(long)]
+        dashboard_dir: Option<PathBuf>,
     },
 
     /// Show engine status
@@ -552,11 +557,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             host,
             port,
             dashboard_port,
+            dashboard_dir,
         } => {
-            let config = load_config(cli.config.as_deref());
+            let mut config = load_config(cli.config.as_deref());
+            // Apply --data-dir override
+            if let Some(ref d) = cli.data_dir {
+                config.storage.data_dir = d.clone();
+            }
 
-            // Initialize the PerspectiveEngine
-            let engine = match PerspectiveEngine::new(config.clone()) {
+            // Initialize the PerspectiveEngine (read-only: may skip graph if locked)
+            let engine = match PerspectiveEngine::new_readonly(config.clone()) {
                 Ok(e) => {
                     println!("  ✓ PerspectiveEngine initialized");
                     Arc::new(e)
@@ -565,13 +575,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("  ⚠ Could not initialize PerspectiveEngine: {e}");
                     eprintln!("    API endpoints requiring the engine will return errors.");
                     eprintln!("    Dashboard and health check will still work.");
-                    Arc::new(PerspectiveEngine::new(Config::default())?)
+                    Arc::new(PerspectiveEngine::new_readonly(Config::default())?)
                 }
             };
 
             let status_payload = build_status(&engine, &config).await;
-            let status_json = serde_json::to_string(&status_payload)?;
-            let html = dashboard::dashboard_html(&status_json);
+            let _status_json = serde_json::to_string(&status_payload)?;
+
+            // Static files from React dist (if --dashboard-dir provided)
+            let static_files = dashboard_dir.and_then(|d| static_files::StaticFiles::new(d));
 
             println!("╔══════════════════════════════════════════╗");
             println!("║      Perspective Memory Engine           ║");
@@ -588,9 +600,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // If dashboard is enabled, serve via a tiny HTTP server
             if dashboard_port > 0 {
-                let html_for_server = html.clone();
                 let config_for_server = config.clone();
                 let engine_for_server = engine.clone();
+                let static_files_for_server = static_files;
                 let dashboard_handle = tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     use tokio::net::TcpListener;
@@ -683,12 +695,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                                 json,
                             )
-                        } else if method == "GET" && (path == "/" || path == "/ ") {
+                        } else if method == "GET" && path.starts_with("/api/memories") {
+                            // Parse optional ?q= and ?limit= query params
+                            let (q, limit) = if let Some(qs) = path.split_once('?') {
+                                let params: std::collections::HashMap<&str, &str> = qs.1
+                                    .split('&')
+                                    .filter_map(|p| p.split_once('='))
+                                    .collect();
+                                (
+                                    params.get("q").unwrap_or(&"").to_string(),
+                                    params.get("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(50),
+                                )
+                            } else {
+                                (String::new(), 50)
+                            };
+                            let resp = engine_for_server.list_memories("hermes", &q, limit);
+                            let total = resp.memories.len();
+                            let wrapped = serde_json::json!({
+                                "memories": resp.memories,
+                                "total": total,
+                            });
+                            let json = serde_json::to_string(&wrapped).unwrap_or_default();
                             (
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-                                    .into(),
-                                html_for_server.clone(),
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                json,
                             )
+                        } else if method == "GET" {
+                            // Static file serving with SPA fallback
+                            if let Some(ref sf) = static_files_for_server {
+                                let (status, ct, body) = sf.serve(path);
+                                (
+                                    format!("{status}\r\nContent-Type: {ct}\r\nAccess-Control-Allow-Origin: *\r\n"),
+                                    body,
+                                )
+                            } else {
+                                // No dashboard dir configured, try embedded HTML fallback
+                                if path == "/" || path == "/ " {
+                                    (
+                                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n".into(),
+                                        dashboard::dashboard_html("{}"),
+                                    )
+                                } else {
+                                    (
+                                        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n".into(),
+                                        "Not found".to_string(),
+                                    )
+                                }
+                            }
                         } else {
                             (
                                 "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n".into(),

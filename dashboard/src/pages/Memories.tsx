@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMemories } from '../hooks';
 
-function MemoryCard({ mem }: { mem: { id: string; content: string; memory_type: string; tags: string[]; created_at: string; score?: number } }) {
+function MemoryCard({ mem }: { mem: { id: string; content: string; memory_type: string; tags: string[]; created_at: string; importance?: number; stability?: number } }) {
   const typeColors: Record<string, string> = {
     episodic: 'bg-amber-500/15 text-amber-400',
     semantic: 'bg-blue-500/15 text-blue-400',
@@ -14,8 +14,11 @@ function MemoryCard({ mem }: { mem: { id: string; content: string; memory_type: 
         <span className={`px-2 py-0.5 rounded text-xs font-medium ${typeColors[mem.memory_type] ?? 'bg-zinc-800 text-zinc-400'}`}>
           {mem.memory_type}
         </span>
-        {mem.score !== undefined && (
-          <span className="text-xs text-zinc-600 font-mono">score: {mem.score.toFixed(3)}</span>
+        {mem.importance !== undefined && mem.importance !== null && (
+          <span className="text-xs text-zinc-600 font-mono">importance: {mem.importance.toFixed(2)}</span>
+        )}
+        {mem.stability !== undefined && mem.stability !== null && (
+          <span className="text-xs text-zinc-600 font-mono">stability: {mem.stability.toFixed(2)}</span>
         )}
         <span className="text-xs text-zinc-600 ml-auto">{new Date(mem.created_at).toLocaleDateString()}</span>
       </div>
