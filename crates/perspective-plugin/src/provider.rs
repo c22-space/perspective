@@ -36,7 +36,7 @@ impl PerspectiveProvider {
             "Initializing PerspectiveProvider (tenant={})",
             config.tenant_id
         );
-        let engine = PerspectiveEngine::new(config.engine.clone()).await?;
+        let engine = PerspectiveEngine::new(config.engine.clone())?;
         Ok(Self { engine, config })
     }
 

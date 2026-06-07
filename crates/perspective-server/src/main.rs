@@ -537,7 +537,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let html = dashboard::dashboard_html(&status_json);
 
             // Initialize the PerspectiveEngine
-            let engine = match PerspectiveEngine::new(config.clone()).await {
+            let engine = match PerspectiveEngine::new(config.clone()) {
                 Ok(e) => {
                     println!("  ✓ PerspectiveEngine initialized");
                     Arc::new(e)
@@ -550,7 +550,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // We can't create the engine without backing stores, so we'll
                     // use an Option approach in the handler.
                     // For now, create with default config and let it fail gracefully.
-                    Arc::new(PerspectiveEngine::new(Config::default()).await?)
+                    Arc::new(PerspectiveEngine::new(Config::default())?)
                 }
             };
 
