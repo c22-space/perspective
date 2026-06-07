@@ -4,7 +4,6 @@ use uuid::Uuid;
 
 /// Types of graph nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
 pub enum GraphNode {
     MemoryRef {
         id: Uuid,

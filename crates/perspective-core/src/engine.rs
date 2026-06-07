@@ -229,9 +229,9 @@ impl PerspectiveEngine {
                 },
             )?;
 
-            // Create temporal edge to most recent memory of same type
-            if let Ok(neighbors) = gs.get_neighbors(&req.tenant_id, id, None) {
-                if let Some((last_node, _)) = neighbors.last() {
+            // Create temporal edge to most recent existing memory
+            if let Ok(all_nodes) = gs.get_all_nodes(&req.tenant_id) {
+                if let Some(last_node) = all_nodes.iter().find(|n| n.id() != id) {
                     let edge = GraphEdge {
                         from_id: id,
                         to_id: last_node.id(),
