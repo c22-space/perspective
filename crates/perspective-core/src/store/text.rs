@@ -29,11 +29,21 @@ impl TextStore {
         let tenant_field = schema_builder.add_text_field("tenant", STRING | STORED);
         let schema = schema_builder.build();
 
-        // Try opening existing index first, create if it doesn't exist
+        // Try opening existing index first, create if it doesn't exist.
+        // If both fail (e.g. schema mismatch with stale index), wipe and recreate.
         let index = match Index::open_in_dir(path) {
             Ok(idx) => idx,
-            Err(_) => Index::create_in_dir(path, schema.clone())
-                .map_err(|e| PerspectiveError::Storage(e.to_string()))?,
+            Err(_) => match Index::create_in_dir(path, schema.clone()) {
+                Ok(idx) => idx,
+                Err(_) => {
+                    // Stale index with incompatible schema. Remove and recreate.
+                    let _ = std::fs::remove_dir_all(path);
+                    std::fs::create_dir_all(path)
+                        .map_err(|e| PerspectiveError::Storage(e.to_string()))?;
+                    Index::create_in_dir(path, schema.clone())
+                        .map_err(|e| PerspectiveError::Storage(e.to_string()))?
+                }
+            },
         };
 
         let reader = index

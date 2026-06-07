@@ -402,17 +402,29 @@ impl PerspectiveEngine {
     /// Build a full StatusResponse from live engine data.
     pub fn status_response(&self) -> StatusResponse {
         let monitor = &self.monitor;
-        let event_count = monitor.event_count();
         let uptime = monitor.uptime_secs();
-        let _consolidation = monitor.consolidation_status();
         let decay = monitor.decay_status();
         let gc_candidates = decay.gc_candidates;
         let extraction_queue = monitor.extraction_queue().len();
 
+        // Count actual stored memories from vector store
+        let dims = self.embedder.dimensions();
+        let total_memories = if let Ok(mut vs) = self.vector_store.lock() {
+            // Count for known tenants by searching each
+            let tenants = ["hermes"];
+            let mut count: u64 = 0;
+            for t in &tenants {
+                count += vs.count(t, dims) as u64;
+            }
+            count
+        } else {
+            0
+        };
+
         StatusResponse {
             health: "healthy".to_string(),
             uptime_secs: uptime,
-            total_memories: event_count,
+            total_memories,
             memory_types: MemoryTypeCounts::default(),
             gc_candidates,
             extraction_queue,
@@ -564,76 +576,72 @@ impl PerspectiveEngine {
         }
     }
 
-    /// List memories from the text index for a tenant.
+    /// List memories from the vector store for a tenant.
     /// Used by the dashboard /api/memories endpoint.
+    /// Searches with a zero vector to retrieve all stored memories.
     pub fn list_memories(
         &self,
         tenant_id: &str,
-        query: &str,
+        _query: &str,
         limit: usize,
     ) -> MemoriesResponse {
-        let text_results = if query.trim().is_empty() {
-            // Empty query: can't use Tantivy wildcard, return empty
-            vec![]
+        let dims = self.embedder.dimensions();
+        let results = if let Ok(mut vs) = self.vector_store.lock().map_err(|e| PerspectiveError::Qdrant(e.to_string())) {
+            vs.search(
+                tenant_id,
+                vec![0.0; dims],
+                limit,
+                dims,
+            )
+            .unwrap_or_default()
         } else {
-            match self.text_store.search(tenant_id, query, limit) {
-                Ok(r) => r,
-                Err(_) => vec![],
-            }
+            vec![]
         };
 
-        let mut memories = Vec::new();
-        for tr in text_results {
-            // Load full memory from vector store payload
-            if let Ok(mut vs) = self.vector_store.lock().map_err(|e| PerspectiveError::Qdrant(e.to_string())) {
-                let results = vs
-                    .search(
-                        tenant_id,
-                        vec![0.0; self.embedder.dimensions()],
-                        200,
-                        self.embedder.dimensions(),
-                    )
+        let memories: Vec<MemorySummary> = results
+            .into_iter()
+            .map(|sr| {
+                let content = sr
+                    .payload
+                    .as_ref()
+                    .and_then(|p| p.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let mem_type = sr
+                    .payload
+                    .as_ref()
+                    .and_then(|p| p.get("memory_type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("episodic")
+                    .to_string();
+                let tags: Vec<String> = sr
+                    .payload
+                    .as_ref()
+                    .and_then(|p| p.get("tags"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
-                if let Some(sr) = results.iter().find(|s| s.id == tr.id) {
-                    let content = sr
-                        .payload
-                        .as_ref()
-                        .and_then(|p| p.get("content"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let mem_type = sr
-                        .payload
-                        .as_ref()
-                        .and_then(|p| p.get("memory_type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("episodic")
-                        .to_string();
-                    let tags: Vec<String> = sr
-                        .payload
-                        .as_ref()
-                        .and_then(|p| p.get("tags"))
-                        .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                        .unwrap_or_default();
-
-                    memories.push(MemorySummary {
-                        id: tr.id.to_string(),
-                        memory_type: mem_type,
-                        content,
-                        tags,
-                        created_at: Utc::now(),
-                        updated_at: Utc::now(),
-                        importance: None,
-                        stability: None,
-                        access_count: 0,
-                        last_accessed: Utc::now(),
-                        source_session: None,
-                    });
+                MemorySummary {
+                    id: sr.id.to_string(),
+                    memory_type: mem_type,
+                    content,
+                    tags,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    importance: None,
+                    stability: None,
+                    access_count: 0,
+                    last_accessed: Utc::now(),
+                    source_session: None,
                 }
-            }
-        }
+            })
+            .collect();
 
         MemoriesResponse { memories }
     }

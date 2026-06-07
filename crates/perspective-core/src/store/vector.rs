@@ -176,4 +176,17 @@ impl QdrantVectorStore {
     pub fn collection_exists(&self, tenant_id: &str) -> bool {
         self.shard_path(tenant_id).join("segments").exists()
     }
+
+    /// Count all points in a tenant's collection.
+    pub fn count(&mut self, tenant_id: &str, dimensions: usize) -> usize {
+        let path = self.shard_path(tenant_id);
+        if !path.join("segments").exists() {
+            return 0;
+        }
+        let shard = match self.get_or_create_shard(tenant_id, dimensions) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+        shard.info().points_count
+    }
 }
