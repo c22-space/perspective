@@ -168,4 +168,35 @@ impl GraphStore {
         let graph = self.load_graph(tenant_id)?;
         Ok(graph.edge_weights().cloned().collect())
     }
+
+    /// Count all nodes and edges across all tenants. Returns (node_count, edge_count, nodes, edges).
+    pub fn count_all(&self) -> Result<(u64, u64, Vec<GraphNode>, Vec<GraphEdge>)> {
+        let txn = self.db.begin_read().map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+
+        let mut all_nodes = Vec::new();
+        if let Ok(table) = txn.open_table(NODES_TABLE) {
+            let iter = table.iter().map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+            for item in iter {
+                let (_, val) = item.map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+                let data: GraphNode = bincode::deserialize(val.value())
+                    .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+                all_nodes.push(data);
+            }
+        }
+
+        let mut all_edges = Vec::new();
+        if let Ok(table) = txn.open_table(EDGES_TABLE) {
+            let iter = table.iter().map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+            for item in iter {
+                let (_, val) = item.map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+                let stored: StoredEdge = bincode::deserialize(val.value())
+                    .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+                all_edges.push(stored.edge);
+            }
+        }
+
+        let node_count = all_nodes.len() as u64;
+        let edge_count = all_edges.len() as u64;
+        Ok((node_count, edge_count, all_nodes, all_edges))
+    }
 }

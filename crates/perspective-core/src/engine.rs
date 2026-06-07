@@ -452,6 +452,8 @@ impl PerspectiveEngine {
         // Count from Tantivy (supports concurrent reads, no WAL lock)
         let total_memories = self.text_store.count();
 
+        let graph = self.get_graph_stats().graph;
+
         StatusResponse {
             health: "healthy".to_string(),
             uptime_secs: uptime,
@@ -459,7 +461,7 @@ impl PerspectiveEngine {
             memory_types: MemoryTypeCounts::default(),
             gc_candidates,
             extraction_queue,
-            graph: GraphStats::default(),
+            graph,
         }
     }
 
@@ -482,8 +484,73 @@ impl PerspectiveEngine {
 
     /// Get graph stats.
     pub fn get_graph_stats(&self) -> GraphResponse {
+        let (total_nodes, total_edges, nodes, edges) = match &self.graph_store {
+            Some(gs) => match gs.count_all() {
+                Ok(result) => result,
+                Err(e) => {
+                    eprintln!("[perspective] graph count_all error: {e}");
+                    (0, 0, vec![], vec![])
+                }
+            },
+            None => {
+                eprintln!("[perspective] graph_store is None");
+                (0, 0, vec![], vec![])
+            }
+        };
+
+        // Count node types
+        let mut memory_ref = 0u64;
+        let mut entity = 0u64;
+        let mut concept = 0u64;
+        for node in &nodes {
+            match node {
+                GraphNode::MemoryRef { .. } => memory_ref += 1,
+                GraphNode::Entity { .. } => entity += 1,
+                GraphNode::Concept { .. } => concept += 1,
+            }
+        }
+
+        // Count edge types
+        let mut edge_types: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        for edge in &edges {
+            let name = format!("{:?}", edge.edge_type);
+            *edge_types.entry(name).or_insert(0) += 1;
+        }
+
+        // Recent edges (last 10)
+        let mut sorted_edges = edges.clone();
+        sorted_edges.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let recent_edges: Vec<RecentEdge> = sorted_edges.into_iter().take(10).map(|e| {
+            RecentEdge {
+                created_at: Some(e.created_at),
+                edge_type: format!("{:?}", e.edge_type),
+                from_id: e.from_id.to_string(),
+                to_id: e.to_id.to_string(),
+                weight: e.weight,
+            }
+        }).collect();
+
+        // Average connectivity (edges per node)
+        let avg_connectivity = if total_nodes > 0 {
+            total_edges as f32 / total_nodes as f32
+        } else {
+            0.0
+        };
+
         GraphResponse {
-            graph: GraphStats::default(),
+            graph: GraphStats {
+                total_nodes,
+                total_edges,
+                communities: 0, // TODO: run community detection
+                avg_connectivity,
+                node_types: GraphNodeTypeCounts {
+                    memory_ref,
+                    entity,
+                    concept,
+                },
+                edge_types,
+                recent_edges,
+            },
         }
     }
 
