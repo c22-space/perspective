@@ -119,6 +119,11 @@ perspective/
 │       ├── plugin.yaml           # Hermes plugin manifest
 │       └── Cargo.toml
 │
+├── perspective-python/           # Python bindings (PyO3)
+│   ├── src/
+│   │   └── lib.rs
+│   └── Cargo.toml
+│
 ├── proto/                        # Shared proto definitions
 │   └── perspective.proto
 │
