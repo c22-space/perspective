@@ -2,3 +2,8 @@ planning
 target/
 .fastembed_cache/
 perspective-data/
+target/
+*.so
+*.dylib
+*.dll
+*.whl
