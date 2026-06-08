@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "perspective-python"
+name = "perspective-memory"
 version = "0.1.0"
 description = "In-process memory engine for AI agents"
 include = ["perspective_python/dashboard_dist/**/*"]
@@ -19,3 +19,7 @@ classifiers = [
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+
+[tool.maturin.generate-ci.github]
+trusted-publishing = true
+publishing-environment = "release"
