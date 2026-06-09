@@ -365,7 +365,7 @@ impl PerspectiveEngine {
                 let pipeline = self.extraction_pipeline.as_ref().unwrap();
                 if pipeline.is_memorable(&req.content) {
                     if let Ok(mut batcher) = self.batcher.lock() {
-                        batcher.buffer(&req.content);
+                        batcher.buffer(&req.tenant_id, &req.content);
                     }
                 }
             }
@@ -901,7 +901,7 @@ impl PerspectiveEngine {
             None => return Ok(0),
         };
 
-        let texts = {
+        let items = {
             let mut batcher = self
                 .batcher
                 .lock()
@@ -912,23 +912,23 @@ impl PerspectiveEngine {
             batcher.drain()
         };
 
-        if texts.is_empty() {
+        if items.is_empty() {
             return Ok(0);
         }
 
-        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let facts = pipeline.extract_batch(&refs).await?;
+        // Extract text for the pipeline, keep tenant_ids for storing results
+        let texts: Vec<&str> = items.iter().map(|(_, t)| t.as_str()).collect();
+        let facts = pipeline.extract_batch(&texts).await?;
 
-        // Store extracted facts as semantic memories
+        // Store extracted facts under the same tenant as the source document
         let fact_count = facts.len();
-        for fact in &facts {
+        for (item, fact) in items.iter().zip(&facts) {
             if fact.confidence < 0.3 {
                 continue;
             }
 
-            // Store the extracted fact as a semantic memory
             let store_req = StoreRequest {
-                tenant_id: "default".to_string(),
+                tenant_id: item.0.clone(),
                 content: fact.fact.clone(),
                 memory_type: MemoryType::Semantic,
                 tags: vec!["extracted".to_string()],
@@ -961,7 +961,6 @@ impl PerspectiveEngine {
                 skip_extraction: true,
             };
 
-            // Store the fact as a semantic memory (skip_extraction prevents infinite loop)
             let _ = self.store(store_req).await;
         }
 
