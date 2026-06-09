@@ -58,7 +58,11 @@ impl PerspectiveEngine {
             config.extraction.endpoint = ep;
         }
         if let Some(m) = extraction_model {
-            config.extraction.model = m;
+            config.extraction.model = m.clone();
+            // If it looks like a path, also set model_path
+            if m.contains('/') || m.contains('\\') || m.ends_with(".gguf") {
+                config.extraction.model_path = m;
+            }
         }
         if let Some(k) = extraction_api_key {
             config.extraction.api_key = Some(k);
