@@ -38,6 +38,14 @@ impl BundledLlm {
     /// `max_tokens` controls how many tokens the model can generate per call.
     /// `n_ctx` is the context window size in tokens.
     pub fn load(model_path: &Path, max_tokens: u32, n_ctx: u32) -> Result<Self> {
+        // Pre-check: llama-cpp-2 panics on missing files instead of returning Err
+        if !model_path.exists() {
+            return Err(PerspectiveError::LlmApi(format!(
+                "Model file not found: {}",
+                model_path.display()
+            )));
+        }
+
         info!(
             "Loading bundled LLM from {} (max_tokens={}, n_ctx={})",
             model_path.display(),
