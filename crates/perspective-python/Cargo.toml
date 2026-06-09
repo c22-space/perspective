@@ -15,4 +15,3 @@ serde_json.workspace = true
 serde.workspace = true
 uuid.workspace = true
 pyo3 = { version = "0.23", features = ["extension-module"] }
-tiny_http = "0.12"
