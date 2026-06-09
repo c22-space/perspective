@@ -21,3 +21,5 @@ tantivy = "0.22"
 fastembed = "4"
 bincode = "1"
 rusqlite.workspace = true
+llama-cpp-2.workspace = true
+encoding_rs.workspace = true

@@ -4,6 +4,7 @@ pub mod decay;
 pub mod embedding;
 pub mod engine;
 pub mod error;
+pub mod llm;
 pub mod extraction;
 pub mod monitor;
 pub mod retrieval;

@@ -35,6 +35,12 @@ pub struct ExtractionConfig {
     pub batch_size: usize,
     pub batch_interval_secs: u64,
     pub importance_gate: bool,
+    /// Path to the bundled GGUF model file. Used when endpoint is empty.
+    pub model_path: String,
+    /// Max tokens to generate per extraction call.
+    pub max_tokens: u32,
+    /// Context window size for the local model.
+    pub n_ctx: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,12 +87,17 @@ impl Default for Config {
             },
             extraction: ExtractionConfig {
                 enabled: true,
-                endpoint: "http://localhost:11434/v1".into(),
-                model: "llama3".into(),
+                // Empty endpoint = use bundled model (Ternary-Bonsai-1.7B).
+                // Set to a URL to use an external OpenAI-compatible server instead.
+                endpoint: String::new(),
+                model: "Ternary-Bonsai-1.7B-Q2_0".into(),
                 api_key: None,
                 batch_size: 10,
                 batch_interval_secs: 30,
                 importance_gate: true,
+                model_path: "models/Ternary-Bonsai-1.7B-Q2_0.gguf".into(),
+                max_tokens: 256,
+                n_ctx: 2048,
             },
             decay: DecayConfig {
                 enabled: true,
