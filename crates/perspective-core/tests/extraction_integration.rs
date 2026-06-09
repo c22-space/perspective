@@ -13,17 +13,42 @@ use tempfile::TempDir;
 /// llama.cpp backend init + model load is not safe to run concurrently.
 static MODEL_MUTEX: Mutex<()> = Mutex::new(());
 
-/// Resolve the path to the bundled GGUF model relative to the crate directory.
-fn bundled_model_path() -> PathBuf {
-    // cargo test runs from crates/perspective-core/
+/// Try to resolve the bundled GGUF model path. Returns None if not found
+/// or if it's an LFS pointer (< 1MB) instead of the real model.
+fn bundled_model_path() -> Option<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .join("../../models/NuExtract-tiny-v1.5-Q5_K_M.gguf")
-        .canonicalize()
-        .expect("Bundled model not found at expected path. Run `git lfs pull` first.")
+    let path = manifest_dir.join("../../models/NuExtract-tiny-v1.5-Q5_K_M.gguf");
+    let path = path.canonicalize().ok()?;
+
+    // Check it's not an LFS pointer (would be ~42 bytes)
+    let metadata = std::fs::metadata(&path).ok()?;
+    if metadata.len() < 1_000_000 {
+        eprintln!(
+            "SKIP: model file is {:} bytes (likely LFS pointer), skipping model tests",
+            metadata.len()
+        );
+        return None;
+    }
+    Some(path)
+}
+
+/// Helper to skip test if model is not available.
+macro_rules! require_model {
+    () => {
+        match bundled_model_path() {
+            Some(p) => p,
+            None => {
+                eprintln!("SKIP: bundled model not available");
+                return;
+            }
+        }
+    };
 }
 
 fn test_config(temp_dir: &std::path::Path, extraction_enabled: bool) -> Config {
+    let model_path = bundled_model_path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
     Config {
         embedding: EmbeddingConfig::Local {
             model: "all-MiniLM-L6-v2".into(),
@@ -36,7 +61,7 @@ fn test_config(temp_dir: &std::path::Path, extraction_enabled: bool) -> Config {
             batch_size: 5,
             batch_interval_secs: 0,
             importance_gate: false,
-            model_path: bundled_model_path().to_string_lossy().into_owned(),
+            model_path,
             max_tokens: 128,
             n_ctx: 512,
         },
@@ -51,13 +76,14 @@ fn test_config(temp_dir: &std::path::Path, extraction_enabled: bool) -> Config {
 }
 
 // ---------------------------------------------------------------------------
-// Real model tests — these load the 442MB GGUF and run inference
+// Real model tests — these load the GGUF and run inference
 // ---------------------------------------------------------------------------
 
 /// Verify the bundled model loads and completes a simple prompt.
 #[tokio::test]
 async fn test_bundled_model_loads_and_completes() {
-    let _lock = MODEL_MUTEX.lock().unwrap();
+    let model_path = require_model!();
+    let _lock = MODEL_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let pipeline = ExtractionPipeline::new(ExtractionConfig {
         enabled: true,
         endpoint: String::new(),
@@ -66,7 +92,7 @@ async fn test_bundled_model_loads_and_completes() {
         batch_size: 5,
         batch_interval_secs: 30,
         importance_gate: false,
-        model_path: bundled_model_path().to_string_lossy().into_owned(),
+        model_path: model_path.to_string_lossy().into_owned(),
         max_tokens: 128,
         n_ctx: 512,
     });
@@ -95,7 +121,8 @@ async fn test_bundled_model_loads_and_completes() {
 /// Test extraction of multiple facts in a single batch.
 #[tokio::test]
 async fn test_batch_extraction_real_model() {
-    let _lock = MODEL_MUTEX.lock().unwrap();
+    let model_path = require_model!();
+    let _lock = MODEL_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let pipeline = ExtractionPipeline::new(ExtractionConfig {
         enabled: true,
         endpoint: String::new(),
@@ -104,7 +131,7 @@ async fn test_batch_extraction_real_model() {
         batch_size: 5,
         batch_interval_secs: 30,
         importance_gate: false,
-        model_path: bundled_model_path().to_string_lossy().into_owned(),
+        model_path: model_path.to_string_lossy().into_owned(),
         max_tokens: 128,
         n_ctx: 512,
     });
@@ -130,9 +157,16 @@ async fn test_batch_extraction_real_model() {
 /// Verifies extracted facts are stored under the correct tenant.
 #[tokio::test]
 async fn test_store_extract_roundtrip() {
-    let _lock = MODEL_MUTEX.lock().unwrap();
+    let _lock = MODEL_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp = TempDir::new().unwrap();
     let config = test_config(temp.path(), true);
+
+    // Skip if model not available
+    if config.extraction.model_path.is_empty() {
+        eprintln!("SKIP: bundled model not available");
+        return;
+    }
+
     let engine = PerspectiveEngine::new(config).unwrap();
 
     // Store a document
@@ -173,9 +207,16 @@ async fn test_store_extract_roundtrip() {
 /// Test that extracted facts are stored under the same tenant as the source.
 #[tokio::test]
 async fn test_extracted_facts_use_source_tenant() {
-    let _lock = MODEL_MUTEX.lock().unwrap();
+    let _lock = MODEL_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp = TempDir::new().unwrap();
     let config = test_config(temp.path(), true);
+
+    // Skip if model not available
+    if config.extraction.model_path.is_empty() {
+        eprintln!("SKIP: bundled model not available");
+        return;
+    }
+
     let engine = PerspectiveEngine::new(config).unwrap();
 
     // Store docs under a specific tenant
