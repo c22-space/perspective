@@ -603,6 +603,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  ✓ Extraction loop started (batch every {}s)", config.extraction.batch_interval_secs);
             }
 
+            // Start the decay loop (hourly Ebbinghaus maintenance)
+            {
+                let decay_handle = engine.clone().start_decay_loop();
+                tokio::spawn(async move {
+                    let _ = decay_handle.await;
+                });
+                println!("  ✓ Decay loop started (hourly)");
+            }
+
+            // Start the consolidation loop (dedup, promotion, community detection)
+            {
+                let consolidation_handle = engine.clone().start_consolidation_loop();
+                tokio::spawn(async move {
+                    let _ = consolidation_handle.await;
+                });
+                println!("  ✓ Consolidation loop started (every {}s)", config.consolidation.interval_secs);
+            }
+
             // If dashboard is enabled, serve via a tiny HTTP server
             if dashboard_port > 0 {
                 let config_for_server = config.clone();
