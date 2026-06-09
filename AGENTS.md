@@ -6,16 +6,19 @@ MIT license. Standalone engine with first-class Hermes integration.
 
 ## Architecture
 - Workspace with 4 crates: perspective-core, perspective-server, perspective-plugin, perspective-python
-- Storage: Qdrant (vectors) + redb (graph) + Tantivy (BM25)
+- Storage: Qdrant-edge (embedded vectors) + redb (graph) + Tantivy (BM25)
 - Memory types: episodic, semantic, procedural
-- LLM extraction via generic OpenAI-compatible API
+- LLM extraction: bundled model (NuExtract via llama-cpp-2) or external OpenAI-compatible API
 - Ebbinghaus decay, periodic consolidation
 
 ## Build Commands
-- `cargo check` — verify compilation
+- `cargo check` — verify compilation (first run takes ~4 min, compiles llama.cpp)
 - `cargo test` — run tests
 - `cargo build` — full build
 - `cargo clippy` — lint
+
+### Build Dependencies
+- `libclang-dev` and `cmake` required for llama-cpp-2 (compiles llama.cpp from source)
 
 ## Code Style
 - Rust 2021 edition
@@ -31,10 +34,12 @@ MIT license. Standalone engine with first-class Hermes integration.
 - Use `#[tokio::test]` for async tests
 
 ## Key Files
-- `crates/perspective-core/src/types/` — Memory type definitions
+- `crates/perspective-core/src/types/` — Memory type definitions (memory.rs, graph.rs)
 - `crates/perspective-core/src/engine.rs` — Main engine struct
-- `crates/perspective-core/src/store/` — Storage layer
-- `crates/perspective-core/src/retrieval/` — Retrieval pipeline
+- `crates/perspective-core/src/store/` — Storage layer (vector.rs, graph.rs, text.rs)
+- `crates/perspective-core/src/retrieval/` — Retrieval pipeline (vector, graph, text, entity search + fusion)
+- `crates/perspective-core/src/llm.rs` — Bundled LLM (llama-cpp-2) wrapper
+- `crates/perspective-core/src/extraction/pipeline.rs` — Extraction routing (bundled vs HTTP)
 - `crates/perspective-plugin/` — Hermes integration
-- `crates/perspective-python/` — Python bindings
+- `crates/perspective-python/` — Python bindings (PyO3)
 - `ARCHITECTURE.md` — Full architecture document

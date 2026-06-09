@@ -15,10 +15,9 @@ Perspective is a standalone memory engine that gives AI agents persistent, struc
 - **Procedural** — Skills and action patterns. Never decays, versioned and refined over time.
 
 ### Key Features
-
 - **Hybrid retrieval** — Vector similarity + graph traversal + entity search, fused via RRF
 - **Ebbinghaus decay** — Memories fade unless accessed. Prevents unbounded accumulation.
-- **LLM extraction** — Smart batching and importance gating keep costs low
+- **LLM extraction** — Bundled local model (NuExtract) or external API. Smart batching and importance gating keep costs low.
 - **Consolidation** — Automatic deduplication, community detection, episodic-to-semantic promotion
 - **Multi-tenant** — Collection-based isolation for multiple agents/users
 - **Dual mode** — Embedded library or client-server (gRPC)
@@ -26,12 +25,12 @@ Perspective is a standalone memory engine that gives AI agents persistent, struc
 ---
 
 ## Quick Start
-
 ### Prerequisites
 
 - Rust 2021 edition (1.75+)
-- Qdrant running (for vector storage)
-- Optional: OpenAI-compatible API for LLM extraction
+- Build deps for llama-cpp-2: `sudo apt install libclang-dev cmake`
+
+No Docker. No external services. All storage is embedded.
 
 ### Build
 
@@ -84,8 +83,7 @@ perspective/
 ---
 
 ## Storage
-
-- **Qdrant** — Vector storage for embeddings (semantic search)
+- **Qdrant-edge** — Embedded vector storage (no Docker required)
 - **redb** — Embedded graph store (relationships, entities, metadata)
 - **Tantivy** — BM25 full-text search
 
@@ -100,6 +98,18 @@ cd dashboard
 npm install
 npm run dev
 ```
+
+---
+
+## Bundled LLM
+
+Perspective bundles a local LLM for fact extraction. No external LLM server needed.
+
+- **Model**: NuExtract-tiny-v1.5-Q5_K_M (401MB GGUF)
+- **Runtime**: llama-cpp-2 (compiles llama.cpp from source)
+- **Build deps**: `sudo apt install libclang-dev cmake`
+- **First build**: `cargo check` takes ~4 min (compiles llama.cpp). Subsequent builds are cached.
+- **Config**: `extraction.endpoint = ""` (empty) uses bundled model. Set to a URL for external HTTP mode.
 
 ---
 
