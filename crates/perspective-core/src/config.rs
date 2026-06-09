@@ -47,7 +47,7 @@ pub struct ExtractionConfig {
 }
 
 fn default_model_path() -> String {
-    "models/Ternary-Bonsai-1.7B-Q2_0.gguf".into()
+    "models/NuExtract-tiny-v1.5-Q5_K_M.gguf".into()
 }
 
 fn default_max_tokens() -> u32 {
@@ -102,15 +102,15 @@ impl Default for Config {
             },
             extraction: ExtractionConfig {
                 enabled: true,
-                // Empty endpoint = use bundled model (Ternary-Bonsai-1.7B).
+                // Empty endpoint = use bundled model (NuExtract-tiny-v1.5).
                 // Set to a URL to use an external OpenAI-compatible server instead.
                 endpoint: String::new(),
-                model: "Ternary-Bonsai-1.7B-Q2_0".into(),
+                model: "NuExtract-tiny-v1.5-Q5_K_M".into(),
                 api_key: None,
                 batch_size: 10,
                 batch_interval_secs: 30,
                 importance_gate: true,
-                model_path: "models/Ternary-Bonsai-1.7B-Q2_0.gguf".into(),
+                model_path: "models/NuExtract-tiny-v1.5-Q5_K_M.gguf".into(),
                 max_tokens: 256,
                 n_ctx: 2048,
             },
