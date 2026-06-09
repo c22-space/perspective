@@ -599,6 +599,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             println!("  ✓ Server ready. Listening...");
 
+            // Start the extraction loop if enabled
+            if config.extraction.enabled {
+                let extraction_handle = engine.clone().start_extraction_loop();
+                // Detach the handle so it runs in the background
+                tokio::spawn(async move {
+                    let _ = extraction_handle.await;
+                });
+                println!("  ✓ Extraction loop started (batch every {}s)", config.extraction.batch_interval_secs);
+            }
+
             // If dashboard is enabled, serve via a tiny HTTP server
             if dashboard_port > 0 {
                 let config_for_server = config.clone();

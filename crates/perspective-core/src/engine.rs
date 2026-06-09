@@ -426,13 +426,79 @@ impl PerspectiveEngine {
         // 4. Sort by score
         let mut sorted: Vec<(Uuid, f32)> = scores.into_iter().collect();
         sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // 5. Graph traversal: follow entity edges from top results
+        //    Load graph once, find related memories via shared entities
+        let mut all_scores: Vec<(Uuid, f32)> = sorted.clone();
+        if let Some(ref gs) = self.graph_store {
+            if let Ok(graph) = gs.load_graph(tenant_id) {
+                use petgraph::visit::EdgeRef;
+                use std::collections::HashSet;
+
+                let mut visited_entities: HashSet<Uuid> = HashSet::new();
+                let hop_budget = self.config.retrieval.graph_hop_limit;
+
+                // For each top result, follow Entity edges to find related memories
+                for (memory_id, score) in sorted.iter().take(budget) {
+                    let memory_str = memory_id.to_string();
+                    for node_idx in graph.node_indices() {
+                        let node = &graph[node_idx];
+                        if node.id().to_string() == memory_str {
+                            // Follow outgoing edges from this memory
+                            for edge_ref in graph.edges(node_idx) {
+                                let edge = edge_ref.weight();
+                                let target_node = &graph[edge_ref.target()];
+
+                                // Only follow Entity edges to Entity/Concept nodes
+                                if matches!(
+                                    edge.edge_type,
+                                    crate::types::graph::EdgeType::Entity
+                                        | crate::types::graph::EdgeType::Semantic
+                                ) && matches!(
+                                    target_node,
+                                    crate::types::graph::GraphNode::Entity { .. }
+                                        | crate::types::graph::GraphNode::Concept { .. }
+                                ) {
+                                    let entity_id = target_node.id();
+                                    if visited_entities.contains(&entity_id) {
+                                        continue;
+                                    }
+                                    visited_entities.insert(entity_id);
+
+                                    // Find other memories connected to this entity
+                                    for reverse_edge in graph.edges(edge_ref.target()) {
+                                        let connected_id = graph[reverse_edge.target()].id();
+                                        let connected_str = connected_id.to_string();
+                                        // Skip if already in results
+                                        if all_scores.iter().any(|(id, _)| id.to_string() == connected_str) {
+                                            continue;
+                                        }
+                                        // Add with decayed score
+                                        let decayed_score = score * 0.5 * edge.weight;
+                                        if hop_budget > 0 {
+                                            all_scores.push((connected_id, decayed_score));
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // Re-sort and truncate to budget
+                all_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                all_scores.truncate(budget);
+            }
+        }
+
         sorted.truncate(budget);
 
-        // 5. Load full memories from payloads
+        // 6. Load full memories from payloads
         let mut memories = Vec::new();
         let mut result_scores = Vec::new();
 
-        for (id, score) in sorted {
+        for (id, score) in all_scores {
             if let Ok(search_results) = self
                 .vector_store
                 .lock()
