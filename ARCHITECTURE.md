@@ -38,9 +38,15 @@ Graph + vector hybrid. Typed memory. LLM-powered extraction. Built in Rust.
 │       ┌──────────────┼──────────────┐                    │
 │       │              │              │                    │
 │  ┌────┴────┐  ┌──────┴──────┐  ┌───┴────┐              │
-│  │ Qdrant  │  │    redb     │  │  LLM   │              │
-│  │(vectors)│  │ (graph/meta)│  │(extract)│              │
+│  │ Qdrant  │  │    redb     │  │ Tantivy│              │
+│  │(vectors)│  │ (graph/meta)│  │ (BM25) │              │
 │  └─────────┘  └─────────────┘  └────────┘              │
+│                      │                                    │
+│              ┌───────┴────────┐                          │
+│              │  LLM Extract   │                          │
+│              │ (NuExtract +   │                          │
+│              │  llama-cpp-2)  │                          │
+│              └────────────────┘                          │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -57,29 +63,30 @@ perspective/
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── engine.rs         # Main PerspectiveEngine struct
-│   │   │   ├── types.rs          # Memory types, enums, structs
 │   │   │   ├── config.rs         # Engine configuration
 │   │   │   ├── error.rs          # Error types
-│   │   │   ├── memory/
+│   │   │   ├── llm.rs            # Bundled LLM (llama-cpp-2) wrapper
+│   │   │   ├── monitor.rs        # Health monitoring
+│   │   │   ├── types/
 │   │   │   │   ├── mod.rs
-│   │   │   │   ├── episodic.rs   # Episodic memory behavior
-│   │   │   │   ├── semantic.rs   # Semantic memory behavior
-│   │   │   │   └── procedural.rs # Procedural memory behavior
+│   │   │   │   ├── memory.rs     # Episodic, Semantic, Procedural
+│   │   │   │   └── graph.rs      # Graph node/edge types
 │   │   │   ├── store/
 │   │   │   │   ├── mod.rs
-│   │   │   │   ├── vector.rs     # Qdrant integration
+│   │   │   │   ├── vector.rs     # Qdrant-edge (embedded)
 │   │   │   │   ├── graph.rs      # redb + petgraph graph store
-│   │   │   │   └── persistence.rs # Cross-store coordination
+│   │   │   │   └── text.rs       # Tantivy BM25 full-text search
 │   │   │   ├── extraction/
 │   │   │   │   ├── mod.rs
-│   │   │   │   ├── pipeline.rs   # Extraction orchestration
+│   │   │   │   ├── pipeline.rs   # Bundled + HTTP extraction routing
 │   │   │   │   ├── batcher.rs    # Smart batching + importance gate
-│   │   │   │   ├── entities.rs   # Entity extraction (LLM + local NER)
+│   │   │   │   ├── entities.rs   # Local entity extraction (NER)
 │   │   │   │   └── relations.rs  # Relationship extraction
 │   │   │   ├── retrieval/
 │   │   │   │   ├── mod.rs
-│   │   │   │   ├── scorer.rs     # recency × importance × relevance
+│   │   │   │   ├── scorer.rs     # recency x importance x relevance
 │   │   │   │   ├── vector_search.rs  # Qdrant vector retrieval
+│   │   │   │   ├── text_search.rs    # Tantivy BM25 retrieval
 │   │   │   │   ├── graph_search.rs   # Graph traversal retrieval
 │   │   │   │   ├── entity_search.rs  # Entity-based lookup
 │   │   │   │   └── fusion.rs     # RRF fusion across retrieval methods
@@ -90,42 +97,31 @@ perspective/
 │   │   │   ├── consolidation/
 │   │   │   │   ├── mod.rs
 │   │   │   │   ├── scheduler.rs  # Periodic consolidation trigger
-│   │   │   │   ├── summarizer.rs # LLM-based memory compression
-│   │   │   │   ├── promotion.rs  # Episodic → semantic promotion
+│   │   │   │   ├── promotion.rs  # Episodic -> semantic promotion
 │   │   │   │   ├── dedup.rs      # Duplicate detection + merge
 │   │   │   │   └── communities.rs # Leiden community detection
 │   │   │   └── embedding/
 │   │   │       ├── mod.rs
-│   │   │       ├── local.rs      # Local embedding model (fastembed)
-│   │   │       └── api.rs        # External API embedding (OpenAI, etc.)
+│   │   │       └── local.rs      # Local embedding model (fastembed)
 │   │   └── Cargo.toml
 │   │
 │   ├── perspective-server/       # gRPC server (client-server mode)
 │   │   ├── src/
-│   │   │   ├── main.rs
-│   │   │   ├── service.rs        # gRPC service implementation
-│   │   │   ├── tenant.rs         # Tenant/collection management
-│   │   │   └── health.rs         # Health checks, readiness
-│   │   ├── proto/
-│   │   │   └── perspective.proto # gRPC service definition
+│   │   │   ├── main.rs          # CLI (clap), gRPC server, commands
+│   │   │   ├── dashboard.rs     # HTTP dashboard serving
+│   │   │   └── static_files.rs  # Embedded static file serving
 │   │   └── Cargo.toml
 │   │
 │   └── perspective-plugin/       # Hermes MemoryProvider plugin
 │       ├── src/
 │       │   ├── lib.rs
-│       │   ├── provider.rs       # MemoryProvider trait impl
-│       │   ├── session.rs        # Session lifecycle management
-│       │   └── config.rs         # Plugin configuration
-│       ├── plugin.yaml           # Hermes plugin manifest
+│       │   └── provider.rs       # MemoryProvider trait impl
 │       └── Cargo.toml
 │
 ├── perspective-python/           # Python bindings (PyO3)
 │   ├── src/
 │   │   └── lib.rs
 │   └── Cargo.toml
-│
-├── proto/                        # Shared proto definitions
-│   └── perspective.proto
 │
 ├── tests/
 │   ├── integration/
@@ -276,20 +272,22 @@ where base_score = LLM-scored (0.0-1.0)
 ```
 
 ### Relevance
-Fusion of vector similarity and graph proximity:
+Fusion of vector similarity, text relevance, and graph proximity:
 ```
-relevance(memory, query) = max(vector_similarity, graph_proximity)
+relevance(memory, query) = max(vector_similarity, text_relevance, graph_proximity)
 where vector_similarity = cosine(query_embedding, memory_embedding)
+      text_relevance = BM25_score(query, memory_content)
       graph_proximity = 1.0 / (1 + shortest_path_hops)
 ```
 
 ### Retrieval Pipeline
 1. **Vector search**: Qdrant top-K by embedding similarity (over-fetch 5x)
-2. **Entity search**: If query contains entities, find memories mentioning them via graph
-3. **Graph expansion**: 1-hop from vector results via graph edges
-4. **Fusion**: Reciprocal Rank Fusion across all result sets
-5. **Scoring**: Apply recency × importance × relevance
-6. **Budget**: Return top-N based on configured budget
+2. **Text search**: Tantivy BM25 keyword matching
+3. **Entity search**: If query contains entities, find memories mentioning them via graph
+4. **Graph expansion**: 1-hop from vector results via graph edges
+5. **Fusion**: Reciprocal Rank Fusion across all result sets
+6. **Scoring**: Apply recency x importance x relevance
+7. **Budget**: Return top-N based on configured budget
 
 ---
 
@@ -298,23 +296,22 @@ where vector_similarity = cosine(query_embedding, memory_embedding)
 ### Flow
 ```
 Raw text arrives
-    ↓
+    |
 Importance gate (heuristic filter, free)
-    ↓ (skip if unmemorable)
+    | (skip if unmemorable)
 Buffer for batching
-    ↓ (batch when N items or T seconds elapsed)
-LLM extraction (single call per batch)
-    ├── Entities (person, org, concept, tool)
-    ├── Relationships (subject-predicate-object)
-    ├── Facts (decomposed from long text)
-    ├── Importance score (0.0-1.0)
-    └── Memory type classification
-    ↓
+    | (batch when N items or T seconds elapsed)
+LLM extraction (bundled NuExtract or external HTTP)
+    +-- Entities (person, org, concept, tool)
+    +-- Relationships (subject-predicate-object)
+    +-- Facts (decomposed from long text)
+    +-- Memory type classification
+    |
 Entity resolution (local NER + fuzzy matching)
-    ↓
-Embedding generation (local or API)
-    ↓
-Store: Qdrant (vector) + redb (graph) + entity links
+    |
+Embedding generation (local fastembed or API)
+    |
+Store: Qdrant (vector) + redb (graph) + Tantivy (BM25 text) + entity links
 ```
 
 ### Importance Gate (Heuristic)
@@ -329,6 +326,15 @@ Skip extraction for clearly unmemorable content:
 - Single LLM call extracts from entire batch
 - Deduplicate within batch before extraction
 - Cost: ~1 LLM call per 10 memories vs 1 per memory
+
+### Bundled LLM (NuExtract)
+Perspective bundles a local LLM for fact extraction. No external LLM server needed.
+- **Model**: NuExtract-tiny-v1.5-Q5_K_M (401MB GGUF, Qwen2.5-0.5B fine-tuned for structured extraction)
+- **Runtime**: llama-cpp-2 (compiles llama.cpp from source via `llama-cpp-sys-2`)
+- **Lifecycle**: Model loads per batch, unloads after processing (no permanent memory residence)
+- **Prompt format**: `<|input|>### Template:{json}### Text:{text}<|output|>` (template-based extraction)
+- **Config**: `extraction.endpoint = ""` (empty) triggers bundled mode. Set to a URL for external HTTP mode.
+- **Build deps**: `libclang-dev` and `cmake` required (first `cargo check` takes ~4 min)
 
 ---
 
@@ -559,11 +565,12 @@ No Docker. No network. Single binary with embedded Qdrant and redb.
 
 | Component | Choice | License | Why |
 |-----------|--------|---------|-----|
-| Vector DB | Qdrant | Apache 2.0 | Best vector search in Rust ecosystem |
+| Vector DB | qdrant-edge | Apache 2.0 | Embedded vector search, no Docker |
 | Graph store | redb | MIT | Embedded, simple, fast KV store |
 | Graph algorithms | petgraph | MIT | In-memory graph algorithms |
 | Full-text search | tantivy | MIT | BM25 scoring, tokenization |
-| Embeddings (local) | fastembed-rs | MIT | Local ONNX inference |
+| Embeddings (local) | fastembed | MIT | Local ONNX inference |
+| LLM (local) | llama-cpp-2 | MIT | Bundled GGUF inference |
 | Serialization | serde + bincode | MIT | Fast binary serialization |
 | gRPC | tonic | MIT | Rust gRPC framework |
 | Runtime | tokio | MIT | Async runtime |
@@ -575,14 +582,14 @@ No Docker. No network. Single binary with embedded Qdrant and redb.
 
 All architectural questions have been resolved:
 
-1. **Qdrant embedded + external**: Embedded Qdrant for local/free use (single binary, zero dependencies). External Qdrant for hosted cloud (user connects to their own instance). Engine supports both via configuration.
+1. **Qdrant embedded**: Uses `qdrant-edge` crate for in-process vector storage. No Docker, no external Qdrant needed. Single binary with all storage embedded.
 
 2. **redb for graph persistence**: Simple, MIT, ACID, single-file database. Holds graph nodes, edges, weights, timestamps. petgraph runs algorithms on in-memory snapshots.
 
-3. **Generic OpenAI-compatible LLM provider**: Any API following OpenAI chat completions format works (OpenAI, Ollama, vLLM, localai, etc.). Single implementation, user configures endpoint.
+3. **Bundled LLM for extraction**: NuExtract-tiny-v1.5 (401MB GGUF) bundled via llama-cpp-2. No external LLM server required. Falls back to HTTP for external endpoints.
 
-4. **Tantivy built now**: Full-text search (BM25) included from day one. Hybrid retrieval (vector + keyword + graph) is the foundation, not an afterthought.
+4. **Tantivy for full-text search**: BM25 keyword matching integrated from day one. Hybrid retrieval (vector + keyword + graph) is the foundation, not an afterthought.
 
-5. **Flexible schema versioning**: Memories stored as JSON/protobuf with required fields. New fields are optional and backward compatible. No migration scripts needed. Engine reads any version, writes latest.
+5. **Flexible schema versioning**: Memories stored as JSON with required fields. New fields are optional and backward compatible. No migration scripts needed. Engine reads any version, writes latest.
 
 6. **Consolidation LLM prompts**: To be iterated during implementation. Quality depends heavily on prompt engineering. Dedicated iteration cycle during consolidation system build.
