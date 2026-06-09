@@ -231,9 +231,11 @@ async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String
         skip_extraction: false,
     };
 
+    let store_tenant = store_req.tenant_id.clone();
+
     match engine.store(store_req).await {
         Ok(id) => {
-            tracing::info!("Stored memory {id} (tenant={})", req.tenant_id);
+            tracing::info!("Stored memory {id} (tenant={store_tenant})");
             let resp = StoreApiResponse { id: id.to_string() };
             (
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
@@ -241,6 +243,7 @@ async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String
             )
         }
         Err(e) => {
+            tracing::warn!("store: failed: {e}");
             let resp = ErrorResponse {
                 error: format!("Store failed: {e}"),
             };
@@ -257,6 +260,7 @@ async fn handle_recall(engine: &PerspectiveEngine, body: &str) -> (String, Strin
     let req: RecallApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
+            tracing::warn!("recall: parse error: {e}");
             let resp = ErrorResponse {
                 error: format!("Invalid request body: {e}"),
             };
@@ -268,9 +272,14 @@ async fn handle_recall(engine: &PerspectiveEngine, body: &str) -> (String, Strin
     };
 
     let budget = req.budget.unwrap_or(10);
+    tracing::info!("recall: tenant={} query=\"{}\" budget={budget}",
+        req.tenant_id,
+        &req.query.chars().take(80).collect::<String>(),
+    );
 
     match engine.recall(&req.tenant_id, &req.query, budget).await {
         Ok(result) => {
+            tracing::info!("recall: returned {} results", result.memories.len());
             let memories: Vec<RecallMemoryItem> = result
                 .memories
                 .iter()
@@ -310,6 +319,7 @@ async fn handle_recall(engine: &PerspectiveEngine, body: &str) -> (String, Strin
             )
         }
         Err(e) => {
+            tracing::warn!("recall: failed: {e}");
             let resp = ErrorResponse {
                 error: format!("Recall failed: {e}"),
             };
@@ -326,6 +336,7 @@ async fn handle_reflect(engine: &PerspectiveEngine, body: &str) -> (String, Stri
     let req: ReflectApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
+            tracing::warn!("reflect: parse error: {e}");
             let resp = ErrorResponse {
                 error: format!("Invalid request body: {e}"),
             };
@@ -336,6 +347,10 @@ async fn handle_reflect(engine: &PerspectiveEngine, body: &str) -> (String, Stri
         }
     };
 
+    tracing::info!("reflect: tenant={} query=\"{}\"",
+        req.tenant_id,
+        &req.query.chars().take(80).collect::<String>(),
+    );
     // Recall relevant memories to build a synthesis
     let synthesis = match engine.recall(&req.tenant_id, &req.query, 5).await {
         Ok(result) => {
@@ -401,6 +416,7 @@ fn handle_health() -> (String, String) {
 async fn handle_tenants(engine: &PerspectiveEngine) -> (String, String) {
     match engine.list_tenants().await {
         Ok(tenants) => {
+            tracing::debug!("tenants: {} tenants", tenants.len());
             let resp = TenantsApiResponse { tenants };
             (
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
@@ -408,6 +424,7 @@ async fn handle_tenants(engine: &PerspectiveEngine) -> (String, String) {
             )
         }
         Err(e) => {
+            tracing::warn!("tenants: failed: {e}");
             let resp = ErrorResponse {
                 error: format!("Failed to list tenants: {e}"),
             };
@@ -608,9 +625,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let engine = match PerspectiveEngine::new_readonly(config.clone()) {
                 Ok(e) => {
                     println!("  ✓ PerspectiveEngine initialized");
+                    tracing::info!("engine: initialized successfully");
                     Arc::new(e)
                 }
                 Err(e) => {
+                    tracing::error!("engine: initialization failed: {e}");
                     eprintln!("  ⚠ Could not initialize PerspectiveEngine: {e}");
                     eprintln!("    API endpoints requiring the engine will return errors.");
                     eprintln!("    Dashboard and health check will still work.");
@@ -635,6 +654,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  Data dir:     {}", config.storage.data_dir.display());
             println!();
             println!("  ✓ Server ready. Listening...");
+            tracing::info!("server: started on {host}:{dashboard_port}");
 
             // Start the extraction loop if enabled
             if config.extraction.enabled {
@@ -644,6 +664,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = extraction_handle.await;
                 });
                 println!("  ✓ Extraction loop started (batch every {}s)", config.extraction.batch_interval_secs);
+                tracing::info!("loop: extraction started, interval={}s", config.extraction.batch_interval_secs);
             }
 
             // Start the decay loop (hourly Ebbinghaus maintenance)
@@ -653,6 +674,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = decay_handle.await;
                 });
                 println!("  ✓ Decay loop started (hourly)");
+                tracing::info!("loop: decay started, interval=3600s");
             }
 
             // Start the consolidation loop (dedup, promotion, community detection)
@@ -662,6 +684,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = consolidation_handle.await;
                 });
                 println!("  ✓ Consolidation loop started (every {}s)", config.consolidation.interval_secs);
+                tracing::info!("loop: consolidation started, interval={}s", config.consolidation.interval_secs);
             }
 
             // If dashboard is enabled, serve via a tiny HTTP server
@@ -682,6 +705,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     };
                     println!("  ✓ Dashboard serving on http://{addr}");
+                    tracing::info!("dashboard: serving on http://{addr}");
 
                     loop {
                         let (mut stream, _remote) = match listener.accept().await {
@@ -856,6 +880,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = dashboard_handle => {},
                     _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("server: shutting down (Ctrl+C)");
                         println!("\nShutting down...");
                     }
                 }

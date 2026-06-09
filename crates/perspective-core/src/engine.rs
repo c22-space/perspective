@@ -176,13 +176,22 @@ impl PerspectiveEngine {
     pub async fn store(&self, req: StoreRequest) -> Result<Uuid> {
         let id = Uuid::new_v4();
         let now = Utc::now();
+        tracing::info!(
+            "store: tenant={} type={} content_preview=\"{}\"",
+            req.tenant_id,
+            req.memory_type,
+            &req.content.chars().take(80).collect::<String>(),
+        );
 
         // Generate embedding (blocking call for local model)
-        let embedding = self
+        let embed_start = std::time::Instant::now();
+        let embedding_vecs = self
             .embedder
             .embed(&[&req.content])
             .await
-            .map_err(|e| PerspectiveError::Embedding(e.to_string()))?
+            .map_err(|e| PerspectiveError::Embedding(e.to_string()))?;
+        tracing::debug!("store: embedding generated in {:?} ({})", embed_start.elapsed(), embedding_vecs.len());
+        let embedding = embedding_vecs
             .into_iter()
             .next()
             .ok_or_else(|| PerspectiveError::Embedding("No embedding returned".into()))?;
@@ -263,6 +272,7 @@ impl PerspectiveEngine {
             .lock()
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
             .upsert(&req.tenant_id, id, embedding, payload, dims)?;
+        tracing::debug!("store: vector upsert id={id} tenant={}", req.tenant_id);
 
         // Store in graph (skip if unavailable)
         if let Some(ref gs) = self.graph_store {
@@ -294,6 +304,7 @@ impl PerspectiveEngine {
         // Store in text index
         self.text_store
             .add_document(&req.tenant_id, id, &req.content, &req.memory_type.to_string())?;
+        tracing::debug!("store: text index updated id={id}");
 
         self.monitor.record_event(
             "store",
@@ -315,9 +326,11 @@ impl PerspectiveEngine {
 
                 // 1. Extract entities locally
                 let entities = extract_entities(&content);
+                tracing::debug!("store: extracted {} entities", entities.len());
 
                 // 2. Extract relations locally
                 let relations = extract_relations(&content, &entities);
+                tracing::debug!("store: extracted {} relations", relations.len());
 
                 // 3. Create Entity/Concept nodes + edges in graph
                 for ent in &entities {
@@ -381,11 +394,13 @@ impl PerspectiveEngine {
                 if pipeline.is_memorable(&req.content) {
                     if let Ok(mut batcher) = self.batcher.lock() {
                         batcher.buffer(&req.tenant_id, &req.content);
+                        tracing::debug!("store: buffered for LLM extraction, queue_len={}", batcher.len());
                     }
                 }
             }
         } // end skip_extraction guard
 
+        tracing::info!("store: complete id={id} tenant={}", req.tenant_id);
         Ok(id)
     }
 
@@ -396,6 +411,11 @@ impl PerspectiveEngine {
         query: &str,
         budget: usize,
     ) -> Result<RecallResult> {
+        tracing::info!(
+            "recall: tenant={tenant_id} query=\"{}\" budget={budget}",
+            &query.chars().take(80).collect::<String>(),
+        );
+        let recall_start = std::time::Instant::now();
         let _now = Utc::now();
         let overfetch = budget * self.config.retrieval.vector_overfetch;
 
@@ -419,14 +439,18 @@ impl PerspectiveEngine {
                 overfetch,
                 self.embedder.dimensions(),
             )?;
+        tracing::debug!("recall: vector search returned {} results", vector_results.len());
 
         // 2. Text search (BM25)
         let text_results = self.text_store.search(tenant_id, query, overfetch)?;
+        tracing::debug!("recall: text search returned {} results", text_results.len());
 
         // 3. Reciprocal Rank Fusion via shared fusion module
         let vector_tuples: Vec<(Uuid, f32)> = vector_results.iter().map(|r| (r.id, r.score)).collect();
         let text_tuples: Vec<(Uuid, f32)> = text_results.iter().map(|r| (r.id, 0.0)).collect();
         let mut sorted = rrf_fuse(&[vector_tuples, text_tuples], self.config.retrieval.rrf_k);
+
+        tracing::debug!("recall: {} candidates after RRF fusion", sorted.len());
 
         // 5. Graph traversal: follow entity edges from top results
         //    Load graph once, find related memories via shared entities
@@ -489,6 +513,7 @@ impl PerspectiveEngine {
 
                 // Re-sort and truncate to budget
                 all_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                tracing::debug!("recall: {} candidates after graph traversal", all_scores.len());
                 all_scores.truncate(budget);
             }
         }
@@ -620,6 +645,12 @@ impl PerspectiveEngine {
                 }
             }
         }
+
+        tracing::info!(
+            "recall: complete {} results in {:?}",
+            memories.len(),
+            recall_start.elapsed(),
+        );
 
         self.monitor.record_event(
             "recall",
@@ -1007,6 +1038,7 @@ impl PerspectiveEngine {
     /// Call this periodically (e.g., from a background thread or the extraction loop).
     /// Returns the number of facts extracted.
     pub async fn process_extraction_batch(&self) -> Result<usize> {
+        tracing::info!("extraction: processing batch");
         let pipeline = match &self.extraction_pipeline {
             Some(p) => p,
             None => return Ok(0),
@@ -1112,9 +1144,13 @@ impl PerspectiveEngine {
             loop {
                 ticker.tick().await;
                 if !self.config.decay.enabled {
+                    tracing::debug!("decay: disabled, skipping");
                     continue;
                 }
-                if let Ok(tenants) = self.list_tenants().await {
+                tracing::info!("decay: loop tick");
+                match self.list_tenants().await {
+                Ok(tenants) => {
+                    tracing::debug!("decay: processing {} tenants", tenants.len());
                     for tenant_id in &tenants {
                         // Fetch all memories for this tenant from the vector store
                         let dims = self.embedder.dimensions();
@@ -1126,6 +1162,7 @@ impl PerspectiveEngine {
                                 dims,
                             ) {
                                 Ok(results) => {
+                                    tracing::debug!("decay: vector search returned {} results for {tenant_id}", results.len());
                                     let mut mems = Vec::new();
                                     for sr in &results {
                                         if let Some(payload) = &sr.payload {
@@ -1203,22 +1240,31 @@ impl PerspectiveEngine {
                                     }
                                     Ok(mems)
                                 }
-                                Err(_) => Err(()),
+                                Err(e) => {
+                                    tracing::warn!("decay: vector search failed for {tenant_id}: {e}");
+                                    Err(())
+                                },
                             },
-                            Err(_) => Err(()),
+                            Err(e) => {
+                                tracing::warn!("decay: mutex poisoned for {tenant_id}: {e}");
+                                Err(())
+                            },
                         };
                         if let Ok(mems) = memories {
+                            tracing::debug!("decay: fetched {} memories for {tenant_id}", mems.len());
                             let results = crate::decay::maintenance::apply_decay_to_memories(
                                 &mems,
                                 &self.config.decay,
                             );
-                            tracing::debug!(
-                                "Decay loop: processed {} memories for tenant {}",
+                            tracing::info!(
+                                "decay: processed {} memories for tenant {}",
                                 results.len(),
                                 tenant_id
                             );
                         }
                     }
+                }
+                Err(e) => tracing::warn!("decay: failed to list tenants: {e}"),
                 }
             }
         })
@@ -1327,17 +1373,22 @@ impl PerspectiveEngine {
 
     /// Run a single consolidation pass: dedup, promotion, and community detection.
     pub async fn run_consolidation(&self, tenant_id: &str) -> Result<ConsolidationReport> {
+        tracing::info!("consolidation: starting for tenant={tenant_id}");
+        let consol_start = std::time::Instant::now();
         let memories = self.load_all_memories(tenant_id, 10000)?;
+        tracing::debug!("consolidation: loaded {} memories", memories.len());
         let mut report = ConsolidationReport::default();
 
         if self.config.consolidation.enabled {
             let threshold = self.config.consolidation.dedup_similarity_threshold;
             let duplicates = find_duplicates(&memories, threshold);
             report.duplicates_found = duplicates.len();
+            tracing::debug!("consolidation: found {} duplicates", duplicates.len());
 
             let promotable =
                 find_promotable(&memories, self.config.consolidation.promotion_access_count);
             report.promotable_count = promotable.len();
+            tracing::debug!("consolidation: {} promotable memories", promotable.len());
         }
 
         if let Some(ref gs) = self.graph_store {
@@ -1347,6 +1398,13 @@ impl PerspectiveEngine {
             }
         }
 
+        tracing::info!(
+            "consolidation: complete for {tenant_id} ({}) dupes, ({}) promotable, ({}) communities in {:?}",
+            report.duplicates_found,
+            report.promotable_count,
+            report.communities,
+            consol_start.elapsed(),
+        );
         Ok(report)
     }
 
@@ -1361,23 +1419,26 @@ impl PerspectiveEngine {
                 if !self.config.consolidation.enabled {
                     continue;
                 }
-                if let Ok(tenants) = self.list_tenants().await {
-                    for tenant_id in &tenants {
-                        match self.run_consolidation(tenant_id).await {
-                            Ok(report) => {
-                                tracing::info!(
-                                    "Consolidation for {}: {} duplicates, {} promotable, {} communities",
-                                    tenant_id,
-                                    report.duplicates_found,
-                                    report.promotable_count,
-                                    report.communities
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!("Consolidation failed for {}: {}", tenant_id, e);
+                match self.list_tenants().await {
+                    Ok(tenants) => {
+                        for tenant_id in &tenants {
+                            match self.run_consolidation(tenant_id).await {
+                                Ok(report) => {
+                                    tracing::info!(
+                                        "consolidation: {} duplicates, {} promotable, {} communities in {}",
+                                        tenant_id,
+                                        report.duplicates_found,
+                                        report.promotable_count,
+                                        report.communities
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!("consolidation: failed for {tenant_id}: {e}");
+                                }
                             }
                         }
                     }
+                    Err(e) => tracing::warn!("consolidation: failed to list tenants: {e}"),
                 }
             }
         })
