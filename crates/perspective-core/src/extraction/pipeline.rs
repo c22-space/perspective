@@ -158,11 +158,12 @@ impl ExtractionPipeline {
         // Process all texts
         let mut facts = Vec::with_capacity(texts.len());
         for text in texts {
+            // NuExtract uses a specific prompt format: <|input|> with ### Template: and ### Text:
+            // The model is trained to fill in empty string fields in the JSON template.
+            let template = serde_json::json!({"fact": "", "confidence": ""}).to_string();
             let prompt = format!(
-                "Extract a concise factual statement from the following text. \
-                 Return a JSON object with keys: \"fact\" (string), \"confidence\" (float 0-1).\n\n\
-                 Text: \"{}\"",
-                text.replace('\\', "\\\\").replace('"', "\\\"")
+                "<|input|>\n### Template:\n{}\n### Text:\n{}\n\n<|output|>",
+                template, text
             );
 
             match llm.complete(&prompt) {
@@ -263,11 +264,10 @@ impl ExtractionPipeline {
 
     /// Extract via external HTTP endpoint (OpenAI-compatible).
     async fn extract_single_http(&self, text: &str) -> Result<ExtractedFact> {
+        let template = serde_json::json!({"fact": "", "confidence": ""}).to_string();
         let prompt = format!(
-            "Extract a concise factual statement from the following text. \
-             Return a JSON object with keys: \"fact\" (string), \"confidence\" (float 0-1).\n\n\
-             Text: \"{}\"",
-            text.replace('\\', "\\\\").replace('"', "\\\"")
+            "<|input|>\n### Template:\n{}\n### Text:\n{}\n\n<|output|>",
+            template, text
         );
 
         let request = ChatRequest {
@@ -359,10 +359,7 @@ fn parse_llm_json(raw: &str) -> Option<(String, f32)> {
     // Try direct parse
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
         let fact = val.get("fact")?.as_str()?.to_string();
-        let confidence = val
-            .get("confidence")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.5) as f32;
+        let confidence = parse_confidence(val.get("confidence"));
         return Some((fact, confidence));
     }
 
@@ -372,14 +369,35 @@ fn parse_llm_json(raw: &str) -> Option<(String, f32)> {
     let slice = &raw[start..=end];
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(slice) {
         let fact = val.get("fact")?.as_str()?.to_string();
-        let confidence = val
-            .get("confidence")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.5) as f32;
+        let confidence = parse_confidence(val.get("confidence"));
         return Some((fact, confidence));
     }
 
     None
+}
+
+/// Parse confidence from a JSON value. Handles:
+/// - Numeric: 0.8, 0.9, 1.0 → parsed as f32
+/// - Text: "high" → 0.9, "medium" → 0.5, "low" → 0.2
+/// - Empty/null → 0.3 (model uncertain)
+fn parse_confidence(val: Option<&serde_json::Value>) -> f32 {
+    match val {
+        Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(0.3) as f32,
+        Some(serde_json::Value::String(s)) => {
+            let lower = s.to_lowercase();
+            match lower.as_str() {
+                "high" | "very high" => 0.9,
+                "medium" | "moderate" => 0.5,
+                "low" | "very low" => 0.2,
+                "" => 0.3,
+                _ => {
+                    // Try parsing as f32 (handles "0.8", "0.9", etc.)
+                    s.parse::<f32>().unwrap_or(0.3)
+                }
+            }
+        }
+        _ => 0.3, // null or missing
+    }
 }
 
 /// Truncate a string for display purposes.
@@ -477,6 +495,51 @@ mod tests {
     fn test_parse_llm_json_invalid() {
         let result = parse_llm_json("just plain text");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_confidence_numeric() {
+        let val = serde_json::from_str::<serde_json::Value>("0.8").unwrap();
+        assert!((parse_confidence(Some(&val)) - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_confidence_text_high() {
+        let val = serde_json::Value::String("high".to_string());
+        assert!((parse_confidence(Some(&val)) - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_confidence_text_medium() {
+        let val = serde_json::Value::String("medium".to_string());
+        assert!((parse_confidence(Some(&val)) - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_confidence_text_low() {
+        let val = serde_json::Value::String("low".to_string());
+        assert!((parse_confidence(Some(&val)) - 0.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_confidence_empty_string() {
+        let val = serde_json::Value::String("".to_string());
+        assert!((parse_confidence(Some(&val)) - 0.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_confidence_null() {
+        assert!((parse_confidence(None) - 0.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_llm_json_with_text_confidence() {
+        let raw = r#"{"fact": "Alice prefers dark mode", "confidence": "high"}"#;
+        let result = parse_llm_json(raw);
+        assert!(result.is_some());
+        let (fact, conf) = result.unwrap();
+        assert_eq!(fact, "Alice prefers dark mode");
+        assert!((conf - 0.9).abs() < 0.01);
     }
 
     #[test]
