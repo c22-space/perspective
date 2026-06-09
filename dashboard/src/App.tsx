@@ -5,6 +5,7 @@ import Processes from './pages/Processes';
 import Graph from './pages/Graph';
 import Memories from './pages/Memories';
 import Config from './pages/Config';
+import Logs from './pages/Logs';
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="/graph" element={<Graph />} />
           <Route path="/memories" element={<Memories />} />
           <Route path="/config" element={<Config />} />
+          <Route path="/logs" element={<Logs />} />
         </Route>
       </Routes>
     </BrowserRouter>

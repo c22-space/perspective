@@ -11,6 +11,7 @@ pub struct TextStore {
     content_field: Field,
     id_field: Field,
     tenant_field: Field,
+    memory_type_field: Field,
 }
 
 #[derive(Debug)]
@@ -24,6 +25,7 @@ pub struct FullTextResult {
     pub id: Uuid,
     pub content: String,
     pub tenant: String,
+    pub memory_type: String,
 }
 
 impl TextStore {
@@ -34,6 +36,7 @@ impl TextStore {
         let content_field = schema_builder.add_text_field("content", TEXT | STORED);
         let id_field = schema_builder.add_text_field("id", STRING | STORED);
         let tenant_field = schema_builder.add_text_field("tenant", STRING | STORED);
+        let memory_type_field = schema_builder.add_text_field("memory_type", STRING | STORED);
         let schema = schema_builder.build();
 
         // Try opening existing index first, create if it doesn't exist.
@@ -65,10 +68,11 @@ impl TextStore {
             content_field,
             id_field,
             tenant_field,
+            memory_type_field,
         })
     }
 
-    pub fn add_document(&self, tenant_id: &str, id: Uuid, content: &str) -> Result<()> {
+    pub fn add_document(&self, tenant_id: &str, id: Uuid, content: &str, memory_type: &str) -> Result<()> {
         let mut writer: IndexWriter = self
             .index
             .writer(50_000_000)
@@ -78,6 +82,7 @@ impl TextStore {
             self.content_field => content,
             self.id_field => id.to_string().as_str(),
             self.tenant_field => tenant_id,
+            self.memory_type_field => memory_type,
         );
 
         writer
@@ -119,10 +124,16 @@ impl TextStore {
                     .unwrap_or("")
                     .to_string();
                 if let Some(id) = id {
+                    let memory_type = doc
+                        .get_first(self.memory_type_field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("episodic")
+                        .to_string();
                     results.push(FullTextResult {
                         id,
                         content,
                         tenant,
+                        memory_type,
                     });
                 }
             }
@@ -171,10 +182,16 @@ impl TextStore {
                         .unwrap_or("")
                         .to_string();
                     if let Some(id) = id {
+                        let memory_type = doc
+                            .get_first(self.memory_type_field)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("episodic")
+                            .to_string();
                         results.push(FullTextResult {
                             id,
                             content,
                             tenant: tenant_id.to_string(),
+                            memory_type,
                         });
                     }
                 }

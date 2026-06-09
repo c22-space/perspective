@@ -37,7 +37,7 @@ struct PerspectiveEngine {
 #[pymethods]
 impl PerspectiveEngine {
     #[new]
-    #[pyo3(signature = (data_dir, dashboard_port=None, dashboard_dist_dir=None, extraction_endpoint=None, extraction_model=None, extraction_api_key=None, extraction_enabled=None))]
+    #[pyo3(signature = (data_dir, dashboard_port=None, dashboard_dist_dir=None, extraction_endpoint=None, extraction_model=None, extraction_api_key=None, extraction_enabled=None, graph_hop_limit=None, retrieval_budget=None))]
     fn py_new(
         data_dir: &str,
         dashboard_port: Option<u16>,
@@ -46,6 +46,8 @@ impl PerspectiveEngine {
         extraction_model: Option<String>,
         extraction_api_key: Option<String>,
         extraction_enabled: Option<bool>,
+        graph_hop_limit: Option<usize>,
+        retrieval_budget: Option<usize>,
     ) -> PyResult<Self> {
         let mut config = Config::default();
         config.storage.data_dir = std::path::PathBuf::from(data_dir);
@@ -65,6 +67,14 @@ impl PerspectiveEngine {
         }
         if let Some(e) = extraction_enabled {
             config.extraction.enabled = e;
+        }
+
+        // Apply retrieval overrides
+        if let Some(h) = graph_hop_limit {
+            config.retrieval.graph_hop_limit = h;
+        }
+        if let Some(b) = retrieval_budget {
+            config.retrieval.default_budget = b;
         }
 
         let engine = CoreEngine::new(config.clone()).map_err(|e| {
@@ -260,6 +270,22 @@ impl PerspectiveEngine {
     /// Get the number of memories queued for LLM extraction.
     fn extraction_queue_len(&self) -> usize {
         self.inner.extraction_queue_len()
+    }
+
+    /// Run a single consolidation pass (dedup, promotion, community detection).
+    #[pyo3(signature = (tenant_id))]
+    fn run_consolidation(&self, tenant_id: &str) -> PyResult<String> {
+        let e = &*self.inner;
+        let report = self
+            .runtime
+            .block_on(async { e.run_consolidation(tenant_id).await })
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "Consolidation failed: {e}"
+                ))
+            })?;
+        serde_json::to_string(&report)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{e}")))
     }
 
     // --- Dashboard query methods (sync, for HTTP handlers) ---

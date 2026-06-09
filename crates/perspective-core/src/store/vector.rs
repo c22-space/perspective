@@ -18,6 +18,7 @@ pub struct SearchResult {
     pub id: Uuid,
     pub score: f32,
     pub payload: Option<serde_json::Value>,
+    pub vector: Option<Vec<f32>>,
 }
 
 fn uuid_to_point_id(id: Uuid) -> PointId {
@@ -149,6 +150,69 @@ impl QdrantVectorStore {
                     id,
                     score: r.score,
                     payload,
+                    vector: None,
+                }
+            })
+            .collect())
+    }
+
+    /// Search and include vectors in results (needed for dedup/consolidation).
+    pub fn search_with_vectors(
+        &mut self,
+        tenant_id: &str,
+        query_vector: Vec<f32>,
+        limit: usize,
+        dimensions: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let path = self.shard_path(tenant_id);
+        if !path.join("segments").exists() {
+            return Ok(vec![]);
+        }
+
+        let shard = self.get_or_create_shard(tenant_id, dimensions)?;
+
+        let search_request = SearchRequest {
+            query: query_vector.into(),
+            filter: None,
+            params: None,
+            limit,
+            offset: 0,
+            with_payload: Some(true.into()),
+            with_vector: Some(true.into()),
+            score_threshold: None,
+        };
+
+        let results: Vec<ScoredPoint> = shard
+            .search(search_request)
+            .map_err(|e| PerspectiveError::Qdrant(format!("Search failed: {}", e)))?;
+
+        Ok(results
+            .into_iter()
+            .map(|r| {
+                let id = point_id_to_uuid(&r.id);
+                let payload = r.payload.map(|p| {
+                    let mut map = serde_json::Map::new();
+                    for (k, v) in p.0 {
+                        map.insert(k, v);
+                    }
+                    serde_json::Value::Object(map)
+                });
+                // Extract dense vector from VectorStructInternal
+                let vector = r.vector.and_then(|vs| match vs {
+                    qdrant_edge::VectorStructInternal::Single(v) => Some(v),
+                    qdrant_edge::VectorStructInternal::Named(mut named) => {
+                        named.remove(DEFAULT_VECTOR_NAME).and_then(|vi| match vi {
+                            qdrant_edge::VectorInternal::Dense(v) => Some(v),
+                            _ => None,
+                        })
+                    }
+                    _ => None,
+                });
+                SearchResult {
+                    id,
+                    score: r.score,
+                    payload,
+                    vector,
                 }
             })
             .collect())

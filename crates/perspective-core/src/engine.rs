@@ -1,4 +1,7 @@
 use crate::config::Config;
+use crate::consolidation::communities::detect_communities;
+use crate::consolidation::dedup::find_duplicates;
+use crate::consolidation::promotion::find_promotable;
 use crate::embedding::Embedder;
 use crate::embedding::LocalEmbedder;
 use crate::error::{PerspectiveError, Result};
@@ -11,7 +14,10 @@ use crate::store::graph::GraphStore;
 use crate::store::text::TextStore;
 use crate::store::vector::QdrantVectorStore;
 use crate::types::*;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use crate::decay::ebbinghaus::reinforce;
+use crate::decay::maintenance::memory_strength;
+use crate::retrieval::fusion::rrf_fuse;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -44,6 +50,13 @@ pub struct StoreRequest {
     pub source_session: Option<String>,
     /// When true, skip extraction (used for internally-generated memories).
     pub skip_extraction: bool,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConsolidationReport {
+    pub duplicates_found: usize,
+    pub promotable_count: usize,
+    pub communities: usize,
 }
 
 impl PerspectiveEngine {
@@ -163,13 +176,22 @@ impl PerspectiveEngine {
     pub async fn store(&self, req: StoreRequest) -> Result<Uuid> {
         let id = Uuid::new_v4();
         let now = Utc::now();
+        tracing::info!(
+            "store: tenant={} type={} content_preview=\"{}\"",
+            req.tenant_id,
+            req.memory_type,
+            &req.content.chars().take(80).collect::<String>(),
+        );
 
         // Generate embedding (blocking call for local model)
-        let embedding = self
+        let embed_start = std::time::Instant::now();
+        let embedding_vecs = self
             .embedder
             .embed(&[&req.content])
             .await
-            .map_err(|e| PerspectiveError::Embedding(e.to_string()))?
+            .map_err(|e| PerspectiveError::Embedding(e.to_string()))?;
+        tracing::debug!("store: embedding generated in {:?} ({})", embed_start.elapsed(), embedding_vecs.len());
+        let embedding = embedding_vecs
             .into_iter()
             .next()
             .ok_or_else(|| PerspectiveError::Embedding("No embedding returned".into()))?;
@@ -250,6 +272,7 @@ impl PerspectiveEngine {
             .lock()
             .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
             .upsert(&req.tenant_id, id, embedding, payload, dims)?;
+        tracing::debug!("store: vector upsert id={id} tenant={}", req.tenant_id);
 
         // Store in graph (skip if unavailable)
         if let Some(ref gs) = self.graph_store {
@@ -280,13 +303,15 @@ impl PerspectiveEngine {
 
         // Store in text index
         self.text_store
-            .add_document(&req.tenant_id, id, &req.content)?;
+            .add_document(&req.tenant_id, id, &req.content, &req.memory_type.to_string())?;
+        tracing::debug!("store: text index updated id={id}");
 
         self.monitor.record_event(
             "store",
             Some(&req.memory_type.to_string()),
             Some(&req.content),
             true,
+            Some(&serde_json::json!({"content": req.content, "memory_type": req.memory_type.to_string(), "tags": req.tags}).to_string()),
         );
 
         // --- Async extraction: entities, relations, LLM facts ---
@@ -301,9 +326,11 @@ impl PerspectiveEngine {
 
                 // 1. Extract entities locally
                 let entities = extract_entities(&content);
+                tracing::debug!("store: extracted {} entities", entities.len());
 
                 // 2. Extract relations locally
                 let relations = extract_relations(&content, &entities);
+                tracing::debug!("store: extracted {} relations", relations.len());
 
                 // 3. Create Entity/Concept nodes + edges in graph
                 for ent in &entities {
@@ -357,6 +384,7 @@ impl PerspectiveEngine {
                         relations.len()
                     )),
                     true,
+                    Some(&serde_json::json!({"entities": entities.len(), "relations": relations.len()}).to_string()),
                 );
             }
 
@@ -366,11 +394,13 @@ impl PerspectiveEngine {
                 if pipeline.is_memorable(&req.content) {
                     if let Ok(mut batcher) = self.batcher.lock() {
                         batcher.buffer(&req.tenant_id, &req.content);
+                        tracing::debug!("store: buffered for LLM extraction, queue_len={}", batcher.len());
                     }
                 }
             }
         } // end skip_extraction guard
 
+        tracing::info!("store: complete id={id} tenant={}", req.tenant_id);
         Ok(id)
     }
 
@@ -381,6 +411,11 @@ impl PerspectiveEngine {
         query: &str,
         budget: usize,
     ) -> Result<RecallResult> {
+        tracing::info!(
+            "recall: tenant={tenant_id} query=\"{}\" budget={budget}",
+            &query.chars().take(80).collect::<String>(),
+        );
+        let recall_start = std::time::Instant::now();
         let _now = Utc::now();
         let overfetch = budget * self.config.retrieval.vector_overfetch;
 
@@ -404,28 +439,18 @@ impl PerspectiveEngine {
                 overfetch,
                 self.embedder.dimensions(),
             )?;
+        tracing::debug!("recall: vector search returned {} results", vector_results.len());
 
         // 2. Text search (BM25)
         let text_results = self.text_store.search(tenant_id, query, overfetch)?;
+        tracing::debug!("recall: text search returned {} results", text_results.len());
 
-        // 3. Merge and deduplicate
-        let mut scores: std::collections::HashMap<Uuid, f32> = std::collections::HashMap::new();
+        // 3. Reciprocal Rank Fusion via shared fusion module
+        let vector_tuples: Vec<(Uuid, f32)> = vector_results.iter().map(|r| (r.id, r.score)).collect();
+        let text_tuples: Vec<(Uuid, f32)> = text_results.iter().map(|r| (r.id, 0.0)).collect();
+        let mut sorted = rrf_fuse(&[vector_tuples, text_tuples], self.config.retrieval.rrf_k);
 
-        // Reciprocal Rank Fusion for vector results
-        for (rank, result) in vector_results.iter().enumerate() {
-            let rrf_score = 1.0 / (self.config.retrieval.rrf_k + rank as f32 + 1.0);
-            *scores.entry(result.id).or_insert(0.0) += rrf_score;
-        }
-
-        // Reciprocal Rank Fusion for text results
-        for (rank, result) in text_results.iter().enumerate() {
-            let rrf_score = 1.0 / (self.config.retrieval.rrf_k + rank as f32 + 1.0);
-            *scores.entry(result.id).or_insert(0.0) += rrf_score;
-        }
-
-        // 4. Sort by score
-        let mut sorted: Vec<(Uuid, f32)> = scores.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        tracing::debug!("recall: {} candidates after RRF fusion", sorted.len());
 
         // 5. Graph traversal: follow entity edges from top results
         //    Load graph once, find related memories via shared entities
@@ -488,6 +513,7 @@ impl PerspectiveEngine {
 
                 // Re-sort and truncate to budget
                 all_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                tracing::debug!("recall: {} candidates after graph traversal", all_scores.len());
                 all_scores.truncate(budget);
             }
         }
@@ -521,33 +547,118 @@ impl PerspectiveEngine {
                             .get("tags")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
+                        let metadata: HashMap<String, serde_json::Value> = payload
+                            .get("metadata")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        let created_at = payload
+                            .get("created_at")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .unwrap_or_else(Utc::now);
+                        let memory_type_str = payload
+                            .get("memory_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("episodic");
 
-                        memories.push(Memory::Episodic(EpisodicMemory {
-                            base: MemoryBase {
-                                id,
-                                tenant_id: tenant_id.to_string(),
-                                content,
-                                embedding: None,
-                                tags,
-                                metadata: Default::default(),
-                                created_at: Utc::now(),
-                                updated_at: Utc::now(),
-                            },
-                            timestamp: Utc::now(),
-                            context: None,
-                            importance: 0.5,
-                            access_count: 0,
-                            last_accessed: Utc::now(),
-                            stability: 1.0,
-                            source_session: None,
-                        }));
+                        let base = MemoryBase {
+                            id,
+                            tenant_id: tenant_id.to_string(),
+                            content,
+                            embedding: None,
+                            tags,
+                            metadata,
+                            created_at,
+                            updated_at: created_at,
+                        };
+
+                        let memory = match memory_type_str {
+                            "semantic" => Memory::Semantic(SemanticMemory {
+                                base,
+                                confidence: 0.8,
+                                source_ids: vec![],
+                                access_count: 0,
+                                last_accessed: Utc::now(),
+                                stability: 10.0,
+                                first_seen: Utc::now(),
+                                last_validated: None,
+                            }),
+                            "procedural" => Memory::Procedural(ProceduralMemory {
+                                base,
+                                code: None,
+                                preconditions: vec![],
+                                postconditions: vec![],
+                                success_rate: 1.0,
+                                access_count: 0,
+                                last_used: Utc::now(),
+                                stability: f32::INFINITY,
+                                version: 1,
+                            }),
+                            _ => Memory::Episodic(EpisodicMemory {
+                                base,
+                                timestamp: Utc::now(),
+                                context: None,
+                                importance: 0.5,
+                                access_count: 0,
+                                last_accessed: Utc::now(),
+                                stability: 1.0,
+                                source_session: None,
+                            }),
+                        };
+
+                        memories.push(memory);
                     }
                 }
             }
             result_scores.push(score);
         }
 
-        self.monitor.record_event("recall", None, Some(query), true);
+        // Apply Ebbinghaus decay: filter weak memories and reinforce accessed ones
+        if self.config.decay.enabled {
+            memories.retain(|m| memory_strength(m) >= self.config.decay.retrieval_threshold);
+            for memory in &mut memories {
+                match memory {
+                    Memory::Episodic(ref mut e) => {
+                        e.access_count += 1;
+                        e.last_accessed = Utc::now();
+                        e.stability = reinforce(
+                            e.stability,
+                            self.config.decay.learning_rate,
+                            e.access_count,
+                        );
+                    }
+                    Memory::Semantic(ref mut s) => {
+                        s.access_count += 1;
+                        s.last_accessed = Utc::now();
+                        s.stability = reinforce(
+                            s.stability,
+                            self.config.decay.learning_rate,
+                            s.access_count,
+                        );
+                    }
+                    Memory::Procedural(ref mut p) => {
+                        p.access_count += 1;
+                        p.last_used = Utc::now();
+                        // Procedural stability is effectively infinite — no reinforcement
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            "recall: complete {} results in {:?}",
+            memories.len(),
+            recall_start.elapsed(),
+        );
+
+        self.monitor.record_event(
+            "recall",
+            None,
+            Some(query),
+            true,
+            Some(&serde_json::json!({"query": query, "result_count": memories.len(), "budget": budget}).to_string()),
+        );
 
         Ok(RecallResult {
             memories,
@@ -610,7 +721,7 @@ impl PerspectiveEngine {
             .delete(tenant_id, id, self.embedder.dimensions())?;
         self.text_store.delete_document(tenant_id, id)?;
         self.monitor
-            .record_event("delete", None, Some(&id.to_string()), true);
+            .record_event("delete", None, Some(&id.to_string()), true, None);
         Ok(())
     }
 
@@ -632,13 +743,44 @@ impl PerspectiveEngine {
         // Count from Tantivy (supports concurrent reads, no WAL lock)
         let total_memories = self.text_store.count();
 
+        // Count memory types from vector store payloads
+        let memory_types = if let Ok(mut vs) = self.vector_store.lock() {
+            let zero_vec = vec![0.0; self.embedder.dimensions()];
+            if let Ok(results) = vs.search(
+                "default",  // count across all types for default tenant
+                zero_vec,
+                total_memories as usize,
+                self.embedder.dimensions(),
+            ) {
+                let mut episodic = 0u64;
+                let mut semantic = 0u64;
+                let mut procedural = 0u64;
+                for r in &results {
+                    if let Some(payload) = &r.payload {
+                        match payload.get("memory_type").and_then(|v| v.as_str()) {
+                            Some("semantic") => semantic += 1,
+                            Some("procedural") => procedural += 1,
+                            _ => episodic += 1,
+                        }
+                    } else {
+                        episodic += 1;
+                    }
+                }
+                MemoryTypeCounts { episodic, semantic, procedural }
+            } else {
+                MemoryTypeCounts::default()
+            }
+        } else {
+            MemoryTypeCounts::default()
+        };
+
         let graph = self.get_graph_stats().graph;
 
         StatusResponse {
             health: "healthy".to_string(),
             uptime_secs: uptime,
             total_memories,
-            memory_types: MemoryTypeCounts::default(),
+            memory_types,
             gc_candidates,
             extraction_queue,
             graph,
@@ -876,7 +1018,7 @@ impl PerspectiveEngine {
             .into_iter()
             .map(|sr| MemorySummary {
                 id: sr.id.to_string(),
-                memory_type: "episodic".to_string(),
+                memory_type: sr.memory_type,
                 content: sr.content,
                 tags: vec![],
                 created_at: Utc::now(),
@@ -896,6 +1038,7 @@ impl PerspectiveEngine {
     /// Call this periodically (e.g., from a background thread or the extraction loop).
     /// Returns the number of facts extracted.
     pub async fn process_extraction_batch(&self) -> Result<usize> {
+        tracing::info!("extraction: processing batch");
         let pipeline = match &self.extraction_pipeline {
             Some(p) => p,
             None => return Ok(0),
@@ -958,6 +1101,7 @@ impl PerspectiveEngine {
             Some("llm"),
             Some(&format!("{} facts extracted", fact_count)),
             true,
+            Some(&serde_json::json!({"fact_count": fact_count}).to_string()),
         );
 
         Ok(fact_count)
@@ -985,6 +1129,316 @@ impl PerspectiveEngine {
                     Err(e) => {
                         tracing::warn!("Extraction loop error: {}", e);
                     }
+                }
+            }
+        })
+    }
+
+    /// Start the background decay loop.
+    /// Runs every hour and applies Ebbinghaus decay to all memories across tenants.
+    /// Returns a JoinHandle that can be used to stop the loop.
+    pub fn start_decay_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let interval = std::time::Duration::from_secs(3600);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                if !self.config.decay.enabled {
+                    tracing::debug!("decay: disabled, skipping");
+                    continue;
+                }
+                tracing::info!("decay: loop tick");
+                match self.list_tenants().await {
+                Ok(tenants) => {
+                    tracing::debug!("decay: processing {} tenants", tenants.len());
+                    for tenant_id in &tenants {
+                        // Fetch all memories for this tenant from the vector store
+                        let dims = self.embedder.dimensions();
+                        let memories = match self.vector_store.lock() {
+                            Ok(mut vs) => match vs.search(
+                                tenant_id,
+                                vec![0.0; dims],
+                                10_000,
+                                dims,
+                            ) {
+                                Ok(results) => {
+                                    tracing::debug!("decay: vector search returned {} results for {tenant_id}", results.len());
+                                    let mut mems = Vec::new();
+                                    for sr in &results {
+                                        if let Some(payload) = &sr.payload {
+                                            let content = payload
+                                                .get("content")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            let memory_type_str = payload
+                                                .get("memory_type")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("episodic");
+                                            let mem = match memory_type_str {
+                                                "semantic" => Memory::Semantic(SemanticMemory {
+                                                    base: MemoryBase {
+                                                        id: sr.id,
+                                                        tenant_id: tenant_id.to_string(),
+                                                        content,
+                                                        embedding: None,
+                                                        tags: vec![],
+                                                        metadata: Default::default(),
+                                                        created_at: Utc::now(),
+                                                        updated_at: Utc::now(),
+                                                    },
+                                                    confidence: 0.8,
+                                                    source_ids: vec![],
+                                                    access_count: 0,
+                                                    last_accessed: Utc::now(),
+                                                    stability: 10.0,
+                                                    first_seen: Utc::now(),
+                                                    last_validated: None,
+                                                }),
+                                                "procedural" => Memory::Procedural(ProceduralMemory {
+                                                    base: MemoryBase {
+                                                        id: sr.id,
+                                                        tenant_id: tenant_id.to_string(),
+                                                        content,
+                                                        embedding: None,
+                                                        tags: vec![],
+                                                        metadata: Default::default(),
+                                                        created_at: Utc::now(),
+                                                        updated_at: Utc::now(),
+                                                    },
+                                                    code: None,
+                                                    preconditions: vec![],
+                                                    postconditions: vec![],
+                                                    success_rate: 1.0,
+                                                    access_count: 0,
+                                                    last_used: Utc::now(),
+                                                    stability: f32::INFINITY,
+                                                    version: 1,
+                                                }),
+                                                _ => Memory::Episodic(EpisodicMemory {
+                                                    base: MemoryBase {
+                                                        id: sr.id,
+                                                        tenant_id: tenant_id.to_string(),
+                                                        content,
+                                                        embedding: None,
+                                                        tags: vec![],
+                                                        metadata: Default::default(),
+                                                        created_at: Utc::now(),
+                                                        updated_at: Utc::now(),
+                                                    },
+                                                    timestamp: Utc::now(),
+                                                    context: None,
+                                                    importance: 0.5,
+                                                    access_count: 0,
+                                                    last_accessed: Utc::now(),
+                                                    stability: 1.0,
+                                                    source_session: None,
+                                                }),
+                                            };
+                                            mems.push(mem);
+                                        }
+                                    }
+                                    Ok(mems)
+                                }
+                                Err(e) => {
+                                    tracing::warn!("decay: vector search failed for {tenant_id}: {e}");
+                                    Err(())
+                                },
+                            },
+                            Err(e) => {
+                                tracing::warn!("decay: mutex poisoned for {tenant_id}: {e}");
+                                Err(())
+                            },
+                        };
+                        if let Ok(mems) = memories {
+                            tracing::debug!("decay: fetched {} memories for {tenant_id}", mems.len());
+                            let results = crate::decay::maintenance::apply_decay_to_memories(
+                                &mems,
+                                &self.config.decay,
+                            );
+                            tracing::info!(
+                                "decay: processed {} memories for tenant {}",
+                                results.len(),
+                                tenant_id
+                            );
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("decay: failed to list tenants: {e}"),
+                }
+            }
+        })
+    }
+
+    /// Load all memories for a tenant with embeddings (for consolidation).
+    /// Uses the vector store to retrieve vectors alongside payloads.
+    fn load_all_memories(&self, tenant_id: &str, limit: usize) -> Result<Vec<Memory>> {
+        let zero_vec = vec![0.0; self.embedder.dimensions()];
+        let results = self
+            .vector_store
+            .lock()
+            .map_err(|e| PerspectiveError::Qdrant(e.to_string()))?
+            .search_with_vectors(tenant_id, zero_vec, limit, self.embedder.dimensions())?;
+
+        let mut memories = Vec::new();
+        for sr in results {
+            let content = sr
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("content"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tags: Vec<String> = sr
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("tags"))
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let metadata: HashMap<String, serde_json::Value> = sr
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("metadata"))
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let created_at = sr
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("created_at"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now);
+            let memory_type_str = sr
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("memory_type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("episodic");
+            let access_count = sr
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("access_count"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            let base = MemoryBase {
+                id: sr.id,
+                tenant_id: tenant_id.to_string(),
+                content,
+                embedding: sr.vector,
+                tags,
+                metadata,
+                created_at,
+                updated_at: created_at,
+            };
+
+            let memory = match memory_type_str {
+                "semantic" => Memory::Semantic(SemanticMemory {
+                    base,
+                    confidence: 0.8,
+                    source_ids: vec![],
+                    access_count,
+                    last_accessed: Utc::now(),
+                    stability: 10.0,
+                    first_seen: Utc::now(),
+                    last_validated: None,
+                }),
+                "procedural" => Memory::Procedural(ProceduralMemory {
+                    base,
+                    code: None,
+                    preconditions: vec![],
+                    postconditions: vec![],
+                    success_rate: 1.0,
+                    access_count,
+                    last_used: Utc::now(),
+                    stability: f32::INFINITY,
+                    version: 1,
+                }),
+                _ => Memory::Episodic(EpisodicMemory {
+                    base,
+                    timestamp: Utc::now(),
+                    context: None,
+                    importance: 0.5,
+                    access_count,
+                    last_accessed: Utc::now(),
+                    stability: 1.0,
+                    source_session: None,
+                }),
+            };
+            memories.push(memory);
+        }
+        Ok(memories)
+    }
+
+    /// Run a single consolidation pass: dedup, promotion, and community detection.
+    pub async fn run_consolidation(&self, tenant_id: &str) -> Result<ConsolidationReport> {
+        tracing::info!("consolidation: starting for tenant={tenant_id}");
+        let consol_start = std::time::Instant::now();
+        let memories = self.load_all_memories(tenant_id, 10000)?;
+        tracing::debug!("consolidation: loaded {} memories", memories.len());
+        let mut report = ConsolidationReport::default();
+
+        if self.config.consolidation.enabled {
+            let threshold = self.config.consolidation.dedup_similarity_threshold;
+            let duplicates = find_duplicates(&memories, threshold);
+            report.duplicates_found = duplicates.len();
+            tracing::debug!("consolidation: found {} duplicates", duplicates.len());
+
+            let promotable =
+                find_promotable(&memories, self.config.consolidation.promotion_access_count);
+            report.promotable_count = promotable.len();
+            tracing::debug!("consolidation: {} promotable memories", promotable.len());
+        }
+
+        if let Some(ref gs) = self.graph_store {
+            if let Ok(graph) = gs.load_graph(tenant_id) {
+                let communities = detect_communities(&graph);
+                report.communities = communities.len();
+            }
+        }
+
+        tracing::info!(
+            "consolidation: complete for {tenant_id} ({}) dupes, ({}) promotable, ({}) communities in {:?}",
+            report.duplicates_found,
+            report.promotable_count,
+            report.communities,
+            consol_start.elapsed(),
+        );
+        Ok(report)
+    }
+
+    /// Start the background consolidation loop.
+    /// Runs every `interval_secs` and processes all tenants.
+    pub fn start_consolidation_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let interval = std::time::Duration::from_secs(self.config.consolidation.interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                if !self.config.consolidation.enabled {
+                    continue;
+                }
+                match self.list_tenants().await {
+                    Ok(tenants) => {
+                        for tenant_id in &tenants {
+                            match self.run_consolidation(tenant_id).await {
+                                Ok(report) => {
+                                    tracing::info!(
+                                        "consolidation: {} duplicates, {} promotable, {} communities in {}",
+                                        tenant_id,
+                                        report.duplicates_found,
+                                        report.promotable_count,
+                                        report.communities
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!("consolidation: failed for {tenant_id}: {e}");
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => tracing::warn!("consolidation: failed to list tenants: {e}"),
                 }
             }
         })

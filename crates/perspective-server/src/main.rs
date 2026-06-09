@@ -1,4 +1,3 @@
-mod dashboard;
 mod static_files;
 
 use clap::{Parser, Subcommand};
@@ -30,15 +29,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the gRPC server and HTTP dashboard
+    /// Start the HTTP server and dashboard
     Serve {
         /// Bind address
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
-
-        /// gRPC port
-        #[arg(short = 'p', long, default_value = "50051")]
-        port: u16,
 
         /// HTTP dashboard port (0 to disable)
         #[arg(long, default_value = "8080")]
@@ -183,6 +178,13 @@ struct ErrorResponse {
     error: String,
 }
 
+#[derive(Serialize)]
+struct LogsApiResponse {
+    lines: Vec<String>,
+    total: usize,
+    log_path: String,
+}
+
 // ── Helper: extract body from raw HTTP request ────────────────────────────────
 
 fn extract_body(request: &str) -> &str {
@@ -210,6 +212,7 @@ async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String
     let req: StoreApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
+            tracing::warn!("Store request parse error: {e}");
             let resp = ErrorResponse {
                 error: format!("Invalid request body: {e}"),
             };
@@ -234,8 +237,11 @@ async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String
         skip_extraction: false,
     };
 
+    let store_tenant = store_req.tenant_id.clone();
+
     match engine.store(store_req).await {
         Ok(id) => {
+            tracing::info!("Stored memory {id} (tenant={store_tenant})");
             let resp = StoreApiResponse { id: id.to_string() };
             (
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
@@ -243,6 +249,7 @@ async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String
             )
         }
         Err(e) => {
+            tracing::warn!("store: failed: {e}");
             let resp = ErrorResponse {
                 error: format!("Store failed: {e}"),
             };
@@ -259,6 +266,7 @@ async fn handle_recall(engine: &PerspectiveEngine, body: &str) -> (String, Strin
     let req: RecallApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
+            tracing::warn!("recall: parse error: {e}");
             let resp = ErrorResponse {
                 error: format!("Invalid request body: {e}"),
             };
@@ -270,9 +278,14 @@ async fn handle_recall(engine: &PerspectiveEngine, body: &str) -> (String, Strin
     };
 
     let budget = req.budget.unwrap_or(10);
+    tracing::info!("recall: tenant={} query=\"{}\" budget={budget}",
+        req.tenant_id,
+        &req.query.chars().take(80).collect::<String>(),
+    );
 
     match engine.recall(&req.tenant_id, &req.query, budget).await {
         Ok(result) => {
+            tracing::info!("recall: returned {} results", result.memories.len());
             let memories: Vec<RecallMemoryItem> = result
                 .memories
                 .iter()
@@ -312,6 +325,7 @@ async fn handle_recall(engine: &PerspectiveEngine, body: &str) -> (String, Strin
             )
         }
         Err(e) => {
+            tracing::warn!("recall: failed: {e}");
             let resp = ErrorResponse {
                 error: format!("Recall failed: {e}"),
             };
@@ -328,6 +342,7 @@ async fn handle_reflect(engine: &PerspectiveEngine, body: &str) -> (String, Stri
     let req: ReflectApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
+            tracing::warn!("reflect: parse error: {e}");
             let resp = ErrorResponse {
                 error: format!("Invalid request body: {e}"),
             };
@@ -338,6 +353,10 @@ async fn handle_reflect(engine: &PerspectiveEngine, body: &str) -> (String, Stri
         }
     };
 
+    tracing::info!("reflect: tenant={} query=\"{}\"",
+        req.tenant_id,
+        &req.query.chars().take(80).collect::<String>(),
+    );
     // Recall relevant memories to build a synthesis
     let synthesis = match engine.recall(&req.tenant_id, &req.query, 5).await {
         Ok(result) => {
@@ -386,6 +405,61 @@ async fn handle_reflect(engine: &PerspectiveEngine, body: &str) -> (String, Stri
     )
 }
 
+/// Handle a GET /api/logs request.
+/// Reads the last N lines from the perspective.log file.
+/// Supports ?limit=N (default 100) and ?filter=keyword query params.
+fn handle_logs(log_dir: &std::path::Path, query: &str) -> (String, String) {
+    let log_path = log_dir.join("perspective.log");
+
+    let (limit, filter) = if let Some(qs) = query.split_once('?') {
+        let params: std::collections::HashMap<&str, &str> =
+            qs.1.split('&').filter_map(|p| p.split_once('=')).collect();
+        (
+            params.get("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(100),
+            params.get("filter").unwrap_or(&"").to_string(),
+        )
+    } else {
+        (100, String::new())
+    };
+
+    match std::fs::read_to_string(&log_path) {
+        Ok(content) => {
+            let mut lines: Vec<String> = content.lines().map(String::from).collect();
+            // Apply filter
+            if !filter.is_empty() {
+                lines = lines.into_iter()
+                    .filter(|l| l.to_lowercase().contains(&filter.to_lowercase()))
+                    .collect();
+            }
+            // Take last N lines
+            let total = lines.len();
+            if lines.len() > limit {
+                lines = lines.split_off(lines.len() - limit);
+            }
+            let resp = LogsApiResponse {
+                lines,
+                total,
+                log_path: log_path.display().to_string(),
+            };
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+        Err(e) => {
+            let resp = LogsApiResponse {
+                lines: vec![format!("Log file not available: {e}")],
+                total: 0,
+                log_path: log_path.display().to_string(),
+            };
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+    }
+}
+
 /// Handle a GET /api/health request.
 fn handle_health() -> (String, String) {
     let resp = HealthApiResponse {
@@ -403,6 +477,7 @@ fn handle_health() -> (String, String) {
 async fn handle_tenants(engine: &PerspectiveEngine) -> (String, String) {
     match engine.list_tenants().await {
         Ok(tenants) => {
+            tracing::debug!("tenants: {} tenants", tenants.len());
             let resp = TenantsApiResponse { tenants };
             (
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
@@ -410,6 +485,7 @@ async fn handle_tenants(engine: &PerspectiveEngine) -> (String, String) {
             )
         }
         Err(e) => {
+            tracing::warn!("tenants: failed: {e}");
             let resp = ErrorResponse {
                 error: format!("Failed to list tenants: {e}"),
             };
@@ -549,14 +625,54 @@ fn print_status_table(status: &StatusPayload, config: &Config) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
+
+    // Load config early to get data_dir for log file
+    let early_config = load_config(cli.config.as_deref());
+    let log_dir = if let Some(ref d) = cli.data_dir {
+        d.clone()
+    } else {
+        early_config.storage.data_dir.clone()
+    };
+
+    // Set up dual logging: stdout (for terminal) + file (for debugging)
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("perspective.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
+
+    use tracing_subscriber::fmt;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let stdout_layer = fmt::layer()
+        .with_target(false)
+        .with_ansi(true);
+
+    if let Some(file) = log_file {
+        let file_layer = fmt::layer()
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file));
+
+        tracing_subscriber::registry()
+            .with(stdout_layer)
+            .with(file_layer)
+            .init();
+        tracing::info!("Logging to {}", log_path.display());
+    } else {
+        tracing_subscriber::registry()
+            .with(stdout_layer)
+            .init();
+        eprintln!("Warning: could not open log file, logging to stdout only");
+    }
 
     match cli.command {
         Commands::Serve {
             host,
-            port,
             dashboard_port,
             dashboard_dir,
         } => {
@@ -570,9 +686,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let engine = match PerspectiveEngine::new_readonly(config.clone()) {
                 Ok(e) => {
                     println!("  ✓ PerspectiveEngine initialized");
+                    tracing::info!("engine: initialized successfully");
                     Arc::new(e)
                 }
                 Err(e) => {
+                    tracing::error!("engine: initialization failed: {e}");
                     eprintln!("  ⚠ Could not initialize PerspectiveEngine: {e}");
                     eprintln!("    API endpoints requiring the engine will return errors.");
                     eprintln!("    Dashboard and health check will still work.");
@@ -590,7 +708,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("║      Perspective Memory Engine           ║");
             println!("╚══════════════════════════════════════════╝");
             println!();
-            println!("  gRPC server:  {host}:{port}");
             if dashboard_port > 0 {
                 println!("  Dashboard:    http://{host}:{dashboard_port}");
             }
@@ -598,6 +715,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  Data dir:     {}", config.storage.data_dir.display());
             println!();
             println!("  ✓ Server ready. Listening...");
+            tracing::info!("server: started on {host}:{dashboard_port}");
 
             // Start the extraction loop if enabled
             if config.extraction.enabled {
@@ -607,6 +725,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = extraction_handle.await;
                 });
                 println!("  ✓ Extraction loop started (batch every {}s)", config.extraction.batch_interval_secs);
+                tracing::info!("loop: extraction started, interval={}s", config.extraction.batch_interval_secs);
+            }
+
+            // Start the decay loop (hourly Ebbinghaus maintenance)
+            {
+                let decay_handle = engine.clone().start_decay_loop();
+                tokio::spawn(async move {
+                    let _ = decay_handle.await;
+                });
+                println!("  ✓ Decay loop started (hourly)");
+                tracing::info!("loop: decay started, interval=3600s");
+            }
+
+            // Start the consolidation loop (dedup, promotion, community detection)
+            {
+                let consolidation_handle = engine.clone().start_consolidation_loop();
+                tokio::spawn(async move {
+                    let _ = consolidation_handle.await;
+                });
+                println!("  ✓ Consolidation loop started (every {}s)", config.consolidation.interval_secs);
+                tracing::info!("loop: consolidation started, interval={}s", config.consolidation.interval_secs);
             }
 
             // If dashboard is enabled, serve via a tiny HTTP server
@@ -614,6 +753,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let config_for_server = config.clone();
                 let engine_for_server = engine.clone();
                 let static_files_for_server = static_files;
+                let log_dir_for_server = config.storage.data_dir.clone();
                 let dashboard_handle = tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     use tokio::net::TcpListener;
@@ -627,6 +767,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     };
                     println!("  ✓ Dashboard serving on http://{addr}");
+                    tracing::info!("dashboard: serving on http://{addr}");
 
                     loop {
                         let (mut stream, _remote) = match listener.accept().await {
@@ -646,6 +787,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let parts: Vec<&str> = first_line.split_whitespace().collect();
                         let method = parts.first().copied().unwrap_or("");
                         let path = parts.get(1).copied().unwrap_or("/");
+                        tracing::debug!("{} {}", method, path);
 
                         let (status_line, body) = if method == "OPTIONS" {
                             // CORS preflight
@@ -679,12 +821,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let body_str = extract_body(&request).to_string();
                             handle_reflect(&engine_for_server, &body_str).await
                         } else if method == "GET" && path.starts_with("/api/activity") {
-                            let resp = engine_for_server.get_activity(50);
-                            let json = serde_json::to_string(&resp).unwrap_or_default();
-                            (
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
-                                json,
-                            )
+                            // Check if path has a numeric ID: /api/activity/123
+                            let after_activity = &path["/api/activity".len()..];
+                            if after_activity.starts_with('/') && after_activity.len() > 1 {
+                                // /api/activity/:id — single event
+                                let id_str = &after_activity[1..];
+                                match id_str.parse::<i64>() {
+                                    Ok(id) => {
+                                        match engine_for_server.monitor.get_event(id) {
+                                            Some(event) => {
+                                                let json = serde_json::to_string(&event).unwrap_or_default();
+                                                ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(), json)
+                                            }
+                                            None => {
+                                                let resp = ErrorResponse { error: format!("Event {id} not found") };
+                                                ("HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(), serde_json::to_string(&resp).unwrap_or_default())
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        let resp = ErrorResponse { error: "Invalid event ID".into() };
+                                        ("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(), serde_json::to_string(&resp).unwrap_or_default())
+                                    }
+                                }
+                            } else {
+                                // /api/activity — list events
+                                let resp = engine_for_server.get_activity(50);
+                                let json = serde_json::to_string(&resp).unwrap_or_default();
+                                (
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                    json,
+                                )
+                            }
                         } else if method == "GET" && path == "/api/processes" {
                             let resp = engine_for_server.get_processes();
                             let json = serde_json::to_string(&resp).unwrap_or_default();
@@ -692,6 +860,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                                 json,
                             )
+                        } else if method == "GET" && path.starts_with("/api/logs") {
+                            handle_logs(&log_dir_for_server, path)
                         } else if method == "GET" && path == "/api/graph" {
                             let resp = engine_for_server.get_graph_stats();
                             let json = serde_json::to_string(&resp).unwrap_or_default();
@@ -741,11 +911,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     body,
                                 )
                             } else {
-                                // No dashboard dir configured, try embedded HTML fallback
-                                if path == "/" || path == "/ " {
+                                // No dashboard dir configured
+                                if path == "/" || path == " " {
                                     (
-                                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n".into(),
-                                        dashboard::dashboard_html("{}"),
+                                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n".into(),
+                                        "Perspective Memory Engine\nDashboard not configured. Start with --dashboard-dir to serve the React dashboard.".to_string(),
                                     )
                                 } else {
                                     (
@@ -774,6 +944,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = dashboard_handle => {},
                     _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("server: shutting down (Ctrl+C)");
                         println!("\nShutting down...");
                     }
                 }

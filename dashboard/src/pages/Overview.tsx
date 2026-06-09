@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { useStatus, useActivity } from '../hooks';
 
@@ -29,6 +30,101 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
   );
 }
 
+function ActivityItem({ event }: { event: { timestamp: string; event_type: string; memory_type: string | null; memory_id: string | null; details_json: string | null } }) {
+  const [expanded, setExpanded] = useState(false);
+  const details = (() => {
+    if (!event.details_json) return null;
+    try { return JSON.parse(event.details_json); } catch { return null; }
+  })();
+
+  const eventColors: Record<string, string> = {
+    store: 'bg-emerald-500/20 text-emerald-400',
+    recall: 'bg-blue-500/20 text-blue-400',
+    reflect: 'bg-amber-500/20 text-amber-400',
+    delete: 'bg-red-500/20 text-red-400',
+    extract: 'bg-purple-500/20 text-purple-400',
+  };
+
+  return (
+    <div
+      className="py-1.5 text-sm cursor-pointer hover:bg-zinc-800/50 rounded px-2 -mx-2 transition-colors"
+      onClick={() => setExpanded(!expanded)}
+    >
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-zinc-600 w-16 shrink-0">{formatTime(event.timestamp)}</span>
+        <span
+          className={`px-2 py-0.5 rounded text-xs font-medium ${
+            eventColors[event.event_type] ?? 'bg-zinc-800 text-zinc-400'
+          }`}
+        >
+          {event.event_type}
+        </span>
+        {event.memory_type && (
+          <span className="text-xs text-zinc-500">{event.memory_type}</span>
+        )}
+        <span className="text-zinc-400 truncate flex-1">
+          {details?.query ?? details?.content ?? details?.preview ?? event.memory_id ?? ''}
+        </span>
+        {details && (
+          <span className="text-zinc-600 text-xs shrink-0">{expanded ? '▾' : '▸'}</span>
+        )}
+      </div>
+      {expanded && details && (
+        <div className="ml-19 mt-2 p-3 bg-zinc-800/50 rounded-lg text-xs space-y-1.5 border border-zinc-700/50">
+          {details.query && (
+            <div className="flex gap-2">
+              <span className="text-zinc-500 shrink-0">Query:</span>
+              <span className="text-zinc-300 font-mono">{details.query}</span>
+            </div>
+          )}
+          {details.result_count !== undefined && (
+            <div className="flex gap-2">
+              <span className="text-zinc-500 shrink-0">Results:</span>
+              <span className="text-zinc-300">{details.result_count}</span>
+            </div>
+          )}
+          {details.budget && (
+            <div className="flex gap-2">
+              <span className="text-zinc-500 shrink-0">Budget:</span>
+              <span className="text-zinc-300">{details.budget}</span>
+            </div>
+          )}
+          {details.content && (
+            <div className="flex gap-2">
+              <span className="text-zinc-500 shrink-0">Content:</span>
+              <span className="text-zinc-300">{details.content}</span>
+            </div>
+          )}
+          {details.memory_type && (
+            <div className="flex gap-2">
+              <span className="text-zinc-500 shrink-0">Type:</span>
+              <span className="text-zinc-300">{details.memory_type}</span>
+            </div>
+          )}
+          {details.tags && details.tags.length > 0 && (
+            <div className="flex gap-2">
+              <span className="text-zinc-500 shrink-0">Tags:</span>
+              <span className="text-zinc-300">{details.tags.join(', ')}</span>
+            </div>
+          )}
+          {details.entities && details.entities.length > 0 && (
+            <div className="flex gap-2">
+              <span className="text-zinc-500 shrink-0">Entities:</span>
+              <span className="text-zinc-300">{details.entities.join(', ')}</span>
+            </div>
+          )}
+          {details.fact_count !== undefined && (
+            <div className="flex gap-2">
+              <span className="text-zinc-500 shrink-0">Facts extracted:</span>
+              <span className="text-zinc-300">{details.fact_count}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Overview() {
   const { data: status, error: statusErr, loading: statusLoading } = useStatus();
   const { data: activity, error: actErr } = useActivity(30);
@@ -42,13 +138,6 @@ export default function Overview() {
     : [];
 
   const events = activity?.events ?? [];
-
-  const eventColors: Record<string, string> = {
-    store: 'bg-emerald-500/20 text-emerald-400',
-    recall: 'bg-blue-500/20 text-blue-400',
-    reflect: 'bg-amber-500/20 text-amber-400',
-    delete: 'bg-red-500/20 text-red-400',
-  };
 
   if (statusLoading) {
     return <div className="text-zinc-500 animate-pulse">Loading...</div>;
@@ -122,24 +211,7 @@ export default function Overview() {
             <p className="text-zinc-600 text-sm py-4 text-center">No activity yet</p>
           )}
           {events.map((ev, i) => (
-            <div key={i} className="flex items-center gap-3 py-1.5 text-sm">
-              <span className="text-xs text-zinc-600 w-16 shrink-0">{formatTime(ev.timestamp)}</span>
-              <span
-                className={`px-2 py-0.5 rounded text-xs font-medium ${
-                  eventColors[ev.event_type] ?? 'bg-zinc-800 text-zinc-400'
-                }`}
-              >
-                {ev.event_type}
-              </span>
-              {ev.memory_type && (
-                <span className="text-xs text-zinc-500">{ev.memory_type}</span>
-              )}
-              <span className="text-zinc-400 truncate flex-1">
-                {ev.details_json
-                  ? (() => { try { return JSON.parse(ev.details_json).preview || ''; } catch { return ''; } })()
-                  : ev.memory_id ?? ''}
-              </span>
-            </div>
+            <ActivityItem key={i} event={ev} />
           ))}
         </div>
       </div>
