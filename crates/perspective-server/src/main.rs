@@ -1,4 +1,3 @@
-mod dashboard;
 mod static_files;
 
 use clap::{Parser, Subcommand};
@@ -912,11 +911,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     body,
                                 )
                             } else {
-                                // No dashboard dir configured, try embedded HTML fallback
-                                if path == "/" || path == "/ " {
+                                // No dashboard dir configured
+                                if path == "/" || path == " " {
                                     (
-                                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n".into(),
-                                        dashboard::dashboard_html("{}"),
+                                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n".into(),
+                                        "Perspective Memory Engine\nDashboard not configured. Start with --dashboard-dir to serve the React dashboard.".to_string(),
                                     )
                                 } else {
                                     (
