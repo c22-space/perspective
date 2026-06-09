@@ -36,11 +36,26 @@ pub struct ExtractionConfig {
     pub batch_interval_secs: u64,
     pub importance_gate: bool,
     /// Path to the bundled GGUF model file. Used when endpoint is empty.
+    #[serde(default = "default_model_path")]
     pub model_path: String,
     /// Max tokens to generate per extraction call.
+    #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     /// Context window size for the local model.
+    #[serde(default = "default_n_ctx")]
     pub n_ctx: u32,
+}
+
+fn default_model_path() -> String {
+    "models/Ternary-Bonsai-1.7B-Q2_0.gguf".into()
+}
+
+fn default_max_tokens() -> u32 {
+    256
+}
+
+fn default_n_ctx() -> u32 {
+    2048
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

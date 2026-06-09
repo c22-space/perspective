@@ -9,3 +9,4 @@ perspective-data/
 dashboard/dist/
 crates/perspective-python/perspective_python/dashboard_dist/
 plugins/memory/perspective/dashboard_dist/
+*.pyc

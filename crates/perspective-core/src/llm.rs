@@ -151,9 +151,7 @@ impl BundledLlm {
     }
 }
 
-// Safety: The inner mutex protects all mutable state.
-unsafe impl Send for BundledLlm {}
-unsafe impl Sync for BundledLlm {}
+
 
 #[cfg(test)]
 mod tests {

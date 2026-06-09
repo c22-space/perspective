@@ -79,13 +79,21 @@ impl ExtractionPipeline {
         // Determine mode: bundled or external
         let bundled = if config.endpoint.is_empty() {
             // Try to load the bundled model
+            // Resolve model_path: try as-is first (absolute), then relative to CWD
             let model_path = std::path::Path::new(&config.model_path);
-            if model_path.exists() {
-                match BundledLlm::load(model_path, config.max_tokens, config.n_ctx) {
+            let resolved_path = if model_path.is_absolute() {
+                model_path.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join(model_path)
+            };
+            if resolved_path.exists() {
+                match BundledLlm::load(&resolved_path, config.max_tokens, config.n_ctx) {
                     Ok(llm) => {
                         tracing::info!(
                             "Extraction pipeline: bundled model mode ({})",
-                            config.model_path
+                            resolved_path.display()
                         );
                         Some(llm)
                     }
@@ -97,7 +105,7 @@ impl ExtractionPipeline {
             } else {
                 warn!(
                     "Bundled model not found at {}. Extraction will be disabled.",
-                    config.model_path
+                    resolved_path.display()
                 );
                 None
             }
