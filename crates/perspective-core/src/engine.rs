@@ -293,7 +293,7 @@ impl PerspectiveEngine {
 
         // Store in text index
         self.text_store
-            .add_document(&req.tenant_id, id, &req.content)?;
+            .add_document(&req.tenant_id, id, &req.content, &req.memory_type.to_string())?;
 
         self.monitor.record_event(
             "store",
@@ -712,13 +712,44 @@ impl PerspectiveEngine {
         // Count from Tantivy (supports concurrent reads, no WAL lock)
         let total_memories = self.text_store.count();
 
+        // Count memory types from vector store payloads
+        let memory_types = if let Ok(mut vs) = self.vector_store.lock() {
+            let zero_vec = vec![0.0; self.embedder.dimensions()];
+            if let Ok(results) = vs.search(
+                "default",  // count across all types for default tenant
+                zero_vec,
+                total_memories as usize,
+                self.embedder.dimensions(),
+            ) {
+                let mut episodic = 0u64;
+                let mut semantic = 0u64;
+                let mut procedural = 0u64;
+                for r in &results {
+                    if let Some(payload) = &r.payload {
+                        match payload.get("memory_type").and_then(|v| v.as_str()) {
+                            Some("semantic") => semantic += 1,
+                            Some("procedural") => procedural += 1,
+                            _ => episodic += 1,
+                        }
+                    } else {
+                        episodic += 1;
+                    }
+                }
+                MemoryTypeCounts { episodic, semantic, procedural }
+            } else {
+                MemoryTypeCounts::default()
+            }
+        } else {
+            MemoryTypeCounts::default()
+        };
+
         let graph = self.get_graph_stats().graph;
 
         StatusResponse {
             health: "healthy".to_string(),
             uptime_secs: uptime,
             total_memories,
-            memory_types: MemoryTypeCounts::default(),
+            memory_types,
             gc_candidates,
             extraction_queue,
             graph,
@@ -956,7 +987,7 @@ impl PerspectiveEngine {
             .into_iter()
             .map(|sr| MemorySummary {
                 id: sr.id.to_string(),
-                memory_type: "episodic".to_string(),
+                memory_type: sr.memory_type,
                 content: sr.content,
                 tags: vec![],
                 created_at: Utc::now(),
