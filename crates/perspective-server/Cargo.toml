@@ -11,8 +11,6 @@ path = "src/main.rs"
 [dependencies]
 perspective-core = { path = "../perspective-core" }
 tokio.workspace = true
-tonic = "0.12"
-prost = "0.13"
 clap = { version = "4", features = ["derive"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

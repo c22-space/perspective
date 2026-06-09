@@ -30,15 +30,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the gRPC server and HTTP dashboard
+    /// Start the HTTP server and dashboard
     Serve {
         /// Bind address
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
-
-        /// gRPC port
-        #[arg(short = 'p', long, default_value = "50051")]
-        port: u16,
 
         /// HTTP dashboard port (0 to disable)
         #[arg(long, default_value = "8080")]
@@ -556,7 +552,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Serve {
             host,
-            port,
             dashboard_port,
             dashboard_dir,
         } => {
@@ -590,7 +585,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("║      Perspective Memory Engine           ║");
             println!("╚══════════════════════════════════════════╝");
             println!();
-            println!("  gRPC server:  {host}:{port}");
             if dashboard_port > 0 {
                 println!("  Dashboard:    http://{host}:{dashboard_port}");
             }

@@ -11,7 +11,7 @@ use crate::store::graph::GraphStore;
 use crate::store::text::TextStore;
 use crate::store::vector::QdrantVectorStore;
 use crate::types::*;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -521,26 +521,67 @@ impl PerspectiveEngine {
                             .get("tags")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
+                        let metadata: HashMap<String, serde_json::Value> = payload
+                            .get("metadata")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        let created_at = payload
+                            .get("created_at")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .unwrap_or_else(Utc::now);
+                        let memory_type_str = payload
+                            .get("memory_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("episodic");
 
-                        memories.push(Memory::Episodic(EpisodicMemory {
-                            base: MemoryBase {
-                                id,
-                                tenant_id: tenant_id.to_string(),
-                                content,
-                                embedding: None,
-                                tags,
-                                metadata: Default::default(),
-                                created_at: Utc::now(),
-                                updated_at: Utc::now(),
-                            },
-                            timestamp: Utc::now(),
-                            context: None,
-                            importance: 0.5,
-                            access_count: 0,
-                            last_accessed: Utc::now(),
-                            stability: 1.0,
-                            source_session: None,
-                        }));
+                        let base = MemoryBase {
+                            id,
+                            tenant_id: tenant_id.to_string(),
+                            content,
+                            embedding: None,
+                            tags,
+                            metadata,
+                            created_at,
+                            updated_at: created_at,
+                        };
+
+                        let memory = match memory_type_str {
+                            "semantic" => Memory::Semantic(SemanticMemory {
+                                base,
+                                confidence: 0.8,
+                                source_ids: vec![],
+                                access_count: 0,
+                                last_accessed: Utc::now(),
+                                stability: 10.0,
+                                first_seen: Utc::now(),
+                                last_validated: None,
+                            }),
+                            "procedural" => Memory::Procedural(ProceduralMemory {
+                                base,
+                                code: None,
+                                preconditions: vec![],
+                                postconditions: vec![],
+                                success_rate: 1.0,
+                                access_count: 0,
+                                last_used: Utc::now(),
+                                stability: f32::INFINITY,
+                                version: 1,
+                            }),
+                            _ => Memory::Episodic(EpisodicMemory {
+                                base,
+                                timestamp: Utc::now(),
+                                context: None,
+                                importance: 0.5,
+                                access_count: 0,
+                                last_accessed: Utc::now(),
+                                stability: 1.0,
+                                source_session: None,
+                            }),
+                        };
+
+                        memories.push(memory);
                     }
                 }
             }
