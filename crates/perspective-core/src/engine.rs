@@ -17,6 +17,7 @@ use crate::types::*;
 use chrono::{DateTime, Utc};
 use crate::decay::ebbinghaus::reinforce;
 use crate::decay::maintenance::memory_strength;
+use crate::retrieval::fusion::rrf_fuse;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -299,6 +300,7 @@ impl PerspectiveEngine {
             Some(&req.memory_type.to_string()),
             Some(&req.content),
             true,
+            Some(&serde_json::json!({"content": req.content, "memory_type": req.memory_type.to_string(), "tags": req.tags}).to_string()),
         );
 
         // --- Async extraction: entities, relations, LLM facts ---
@@ -369,6 +371,7 @@ impl PerspectiveEngine {
                         relations.len()
                     )),
                     true,
+                    Some(&serde_json::json!({"entities": entities.len(), "relations": relations.len()}).to_string()),
                 );
             }
 
@@ -420,24 +423,10 @@ impl PerspectiveEngine {
         // 2. Text search (BM25)
         let text_results = self.text_store.search(tenant_id, query, overfetch)?;
 
-        // 3. Merge and deduplicate
-        let mut scores: std::collections::HashMap<Uuid, f32> = std::collections::HashMap::new();
-
-        // Reciprocal Rank Fusion for vector results
-        for (rank, result) in vector_results.iter().enumerate() {
-            let rrf_score = 1.0 / (self.config.retrieval.rrf_k + rank as f32 + 1.0);
-            *scores.entry(result.id).or_insert(0.0) += rrf_score;
-        }
-
-        // Reciprocal Rank Fusion for text results
-        for (rank, result) in text_results.iter().enumerate() {
-            let rrf_score = 1.0 / (self.config.retrieval.rrf_k + rank as f32 + 1.0);
-            *scores.entry(result.id).or_insert(0.0) += rrf_score;
-        }
-
-        // 4. Sort by score
-        let mut sorted: Vec<(Uuid, f32)> = scores.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // 3. Reciprocal Rank Fusion via shared fusion module
+        let vector_tuples: Vec<(Uuid, f32)> = vector_results.iter().map(|r| (r.id, r.score)).collect();
+        let text_tuples: Vec<(Uuid, f32)> = text_results.iter().map(|r| (r.id, 0.0)).collect();
+        let mut sorted = rrf_fuse(&[vector_tuples, text_tuples], self.config.retrieval.rrf_k);
 
         // 5. Graph traversal: follow entity edges from top results
         //    Load graph once, find related memories via shared entities
@@ -632,7 +621,13 @@ impl PerspectiveEngine {
             }
         }
 
-        self.monitor.record_event("recall", None, Some(query), true);
+        self.monitor.record_event(
+            "recall",
+            None,
+            Some(query),
+            true,
+            Some(&serde_json::json!({"query": query, "result_count": memories.len(), "budget": budget}).to_string()),
+        );
 
         Ok(RecallResult {
             memories,
@@ -695,7 +690,7 @@ impl PerspectiveEngine {
             .delete(tenant_id, id, self.embedder.dimensions())?;
         self.text_store.delete_document(tenant_id, id)?;
         self.monitor
-            .record_event("delete", None, Some(&id.to_string()), true);
+            .record_event("delete", None, Some(&id.to_string()), true, None);
         Ok(())
     }
 
@@ -1043,6 +1038,7 @@ impl PerspectiveEngine {
             Some("llm"),
             Some(&format!("{} facts extracted", fact_count)),
             true,
+            Some(&serde_json::json!({"fact_count": fact_count}).to_string()),
         );
 
         Ok(fact_count)

@@ -14,6 +14,8 @@ pub struct ActivityEvent {
     pub memory_type: Option<String>,
     pub content: Option<String>,
     pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details_json: Option<String>,
 }
 
 /// Consolidation status snapshot.
@@ -193,7 +195,8 @@ impl Monitor {
                 operation TEXT NOT NULL,
                 memory_type TEXT,
                 content TEXT,
-                success INTEGER NOT NULL DEFAULT 1
+                success INTEGER NOT NULL DEFAULT 1,
+                details_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_events_operation ON events(operation);
@@ -212,12 +215,17 @@ impl Monitor {
         )
         .expect("Failed to create activity tables");
 
+        // Migration: add details_json column if it doesn't exist
+        {
+            let _ = conn.execute("ALTER TABLE events ADD COLUMN details_json TEXT", []);
+        }
+
         let mut ring_buffer = VecDeque::with_capacity(1000);
 
         // Warm the in-memory ring buffer from the last 1000 events
         {
             let stmt = conn.prepare(
-                "SELECT id, timestamp, operation, memory_type, content, success
+                "SELECT id, timestamp, operation, memory_type, content, success, details_json
                  FROM events ORDER BY id DESC LIMIT 1000",
             );
             if let Ok(mut stmt) = stmt {
@@ -230,6 +238,7 @@ impl Monitor {
                             memory_type: row.get(3)?,
                             content: row.get(4)?,
                             success: row.get::<_, i64>(5)? != 0,
+                            details_json: row.get(6)?,
                         })
                     })
                     .expect("Failed to query events");
@@ -261,6 +270,7 @@ impl Monitor {
         memory_type: Option<&str>,
         content: Option<&str>,
         success: bool,
+        details_json: Option<&str>,
     ) {
         let now = Utc::now();
         let ts = now.to_rfc3339();
@@ -269,14 +279,15 @@ impl Monitor {
         // Write to SQLite
         if let Ok(db) = self.db.lock() {
             let _ = db.execute(
-                "INSERT INTO events (timestamp, operation, memory_type, content, success)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO events (timestamp, operation, memory_type, content, success, details_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     ts,
                     operation,
                     memory_type,
                     content_truncated.as_deref(),
                     success as i64,
+                    details_json,
                 ],
             );
         }
@@ -289,6 +300,7 @@ impl Monitor {
             memory_type: memory_type.map(|s| s.to_string()),
             content: content_truncated,
             success,
+            details_json: details_json.map(|s| s.to_string()),
         };
         if let Ok(mut events) = self.events.lock() {
             events.push_back(event);
@@ -302,7 +314,7 @@ impl Monitor {
     pub fn get_events(&self, limit: usize) -> Vec<ActivityEvent> {
         if let Ok(db) = self.db.lock() {
             let mut stmt = match db.prepare(
-                "SELECT id, timestamp, operation, memory_type, content, success
+                "SELECT id, timestamp, operation, memory_type, content, success, details_json
                  FROM events ORDER BY id DESC LIMIT ?1",
             ) {
                 Ok(s) => s,
@@ -316,6 +328,7 @@ impl Monitor {
                     memory_type: row.get(3)?,
                     content: row.get(4)?,
                     success: row.get::<_, i64>(5)? != 0,
+                    details_json: row.get(6)?,
                 })
             });
             if let Ok(rows) = rows {
@@ -327,6 +340,33 @@ impl Monitor {
             .lock()
             .map(|events| events.iter().rev().take(limit).cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Get a single activity event by ID.
+    pub fn get_event(&self, event_id: i64) -> Option<ActivityEvent> {
+        if let Ok(db) = self.db.lock() {
+            let mut stmt = match db.prepare(
+                "SELECT id, timestamp, operation, memory_type, content, success, details_json
+                 FROM events WHERE id = ?1",
+            ) {
+                Ok(s) => s,
+                Err(_) => return None,
+            };
+            let row = stmt
+                .query_row(params![event_id], |row| {
+                    Ok(ActivityEvent {
+                        id: row.get(0)?,
+                        timestamp: row.get::<_, String>(1)?.parse().unwrap_or_default(),
+                        operation: row.get(2)?,
+                        memory_type: row.get(3)?,
+                        content: row.get(4)?,
+                        success: row.get::<_, i64>(5)? != 0,
+                        details_json: row.get(6)?,
+                    })
+                });
+            return row.ok();
+        }
+        None
     }
 
     /// Count total events.

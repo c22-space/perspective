@@ -691,12 +691,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let body_str = extract_body(&request).to_string();
                             handle_reflect(&engine_for_server, &body_str).await
                         } else if method == "GET" && path.starts_with("/api/activity") {
-                            let resp = engine_for_server.get_activity(50);
-                            let json = serde_json::to_string(&resp).unwrap_or_default();
-                            (
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
-                                json,
-                            )
+                            // Check if path has a numeric ID: /api/activity/123
+                            let after_activity = &path["/api/activity".len()..];
+                            if after_activity.starts_with('/') && after_activity.len() > 1 {
+                                // /api/activity/:id — single event
+                                let id_str = &after_activity[1..];
+                                match id_str.parse::<i64>() {
+                                    Ok(id) => {
+                                        match engine_for_server.monitor.get_event(id) {
+                                            Some(event) => {
+                                                let json = serde_json::to_string(&event).unwrap_or_default();
+                                                ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(), json)
+                                            }
+                                            None => {
+                                                let resp = ErrorResponse { error: format!("Event {id} not found") };
+                                                ("HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(), serde_json::to_string(&resp).unwrap_or_default())
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        let resp = ErrorResponse { error: "Invalid event ID".into() };
+                                        ("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(), serde_json::to_string(&resp).unwrap_or_default())
+                                    }
+                                }
+                            } else {
+                                // /api/activity — list events
+                                let resp = engine_for_server.get_activity(50);
+                                let json = serde_json::to_string(&resp).unwrap_or_default();
+                                (
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                    json,
+                                )
+                            }
                         } else if method == "GET" && path == "/api/processes" {
                             let resp = engine_for_server.get_processes();
                             let json = serde_json::to_string(&resp).unwrap_or_default();
