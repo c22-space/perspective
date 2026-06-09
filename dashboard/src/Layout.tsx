@@ -6,6 +6,7 @@ const nav = [
   { to: '/graph', label: 'Graph' },
   { to: '/memories', label: 'Memories' },
   { to: '/config', label: 'Config' },
+  { to: '/logs', label: 'Logs' },
 ];
 
 export default function Layout() {

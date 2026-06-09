@@ -179,6 +179,13 @@ struct ErrorResponse {
     error: String,
 }
 
+#[derive(Serialize)]
+struct LogsApiResponse {
+    lines: Vec<String>,
+    total: usize,
+    log_path: String,
+}
+
 // ── Helper: extract body from raw HTTP request ────────────────────────────────
 
 fn extract_body(request: &str) -> &str {
@@ -397,6 +404,61 @@ async fn handle_reflect(engine: &PerspectiveEngine, body: &str) -> (String, Stri
             .into(),
         serde_json::to_string(&resp).unwrap_or_default(),
     )
+}
+
+/// Handle a GET /api/logs request.
+/// Reads the last N lines from the perspective.log file.
+/// Supports ?limit=N (default 100) and ?filter=keyword query params.
+fn handle_logs(log_dir: &std::path::Path, query: &str) -> (String, String) {
+    let log_path = log_dir.join("perspective.log");
+
+    let (limit, filter) = if let Some(qs) = query.split_once('?') {
+        let params: std::collections::HashMap<&str, &str> =
+            qs.1.split('&').filter_map(|p| p.split_once('=')).collect();
+        (
+            params.get("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(100),
+            params.get("filter").unwrap_or(&"").to_string(),
+        )
+    } else {
+        (100, String::new())
+    };
+
+    match std::fs::read_to_string(&log_path) {
+        Ok(content) => {
+            let mut lines: Vec<String> = content.lines().map(String::from).collect();
+            // Apply filter
+            if !filter.is_empty() {
+                lines = lines.into_iter()
+                    .filter(|l| l.to_lowercase().contains(&filter.to_lowercase()))
+                    .collect();
+            }
+            // Take last N lines
+            let total = lines.len();
+            if lines.len() > limit {
+                lines = lines.split_off(lines.len() - limit);
+            }
+            let resp = LogsApiResponse {
+                lines,
+                total,
+                log_path: log_path.display().to_string(),
+            };
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+        Err(e) => {
+            let resp = LogsApiResponse {
+                lines: vec![format!("Log file not available: {e}")],
+                total: 0,
+                log_path: log_path.display().to_string(),
+            };
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                serde_json::to_string(&resp).unwrap_or_default(),
+            )
+        }
+    }
 }
 
 /// Handle a GET /api/health request.
@@ -692,6 +754,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let config_for_server = config.clone();
                 let engine_for_server = engine.clone();
                 let static_files_for_server = static_files;
+                let log_dir_for_server = config.storage.data_dir.clone();
                 let dashboard_handle = tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     use tokio::net::TcpListener;
@@ -798,6 +861,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                                 json,
                             )
+                        } else if method == "GET" && path.starts_with("/api/logs") {
+                            handle_logs(&log_dir_for_server, path)
                         } else if method == "GET" && path == "/api/graph" {
                             let resp = engine_for_server.get_graph_stats();
                             let json = serde_json::to_string(&resp).unwrap_or_default();

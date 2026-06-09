@@ -114,6 +114,23 @@ pub fn dashboard_html(stats_json: &str) -> String {
     </div>
   </div>
 
+  <div class="card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between">
+      Server Logs
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="log-filter" placeholder="Filter..." style="background:#0f1117;border:1px solid #2a2d3a;color:#ccc;padding:4px 8px;border-radius:4px;font-size:0.75rem;width:120px" />
+        <select id="log-limit" style="background:#0f1117;border:1px solid #2a2d3a;color:#ccc;padding:4px 8px;border-radius:4px;font-size:0.75rem">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+        <button onclick="loadLogs()" style="background:#3b82f6;color:white;border:none;padding:4px 12px;border-radius:4px;font-size:0.75rem;cursor:pointer">Refresh</button>
+      </div>
+    </h2>
+    <div id="log-output" style="font-family:monospace;font-size:0.75rem;color:#888;max-height:400px;overflow-y:auto;white-space:pre-wrap;background:#0a0c10;padding:12px;border-radius:6px">Loading logs...</div>
+  </div>
+
   <p class="footer">Perspective Memory Engine &mdash; dashboard auto-refreshes every 5s</p>
 
 <script>
@@ -226,6 +243,28 @@ pub fn dashboard_html(stats_json: &str) -> String {
     fetch('/api/status').then(function(r) {{ return r.json(); }})
       .then(render).catch(function() {{}});
   }}, 5000);
+
+  // Log viewer
+  window.loadLogs = function() {{
+    var limit = document.getElementById('log-limit').value || '100';
+    var filter = document.getElementById('log-filter').value || '';
+    var url = '/api/logs?limit=' + limit;
+    if (filter) url += '&filter=' + encodeURIComponent(filter);
+    fetch(url).then(function(r) {{ return r.json(); }})
+      .then(function(data) {{
+        var el = document.getElementById('log-output');
+        if (!data.lines || data.lines.length === 0) {{
+          el.textContent = 'No logs found at ' + data.log_path;
+        }} else {{
+          el.textContent = data.lines.join('\n');
+          el.scrollTop = el.scrollHeight;
+        }}
+      }}).catch(function(e) {{
+        document.getElementById('log-output').textContent = 'Failed to load logs: ' + e;
+      }});
+  }};
+  // Auto-load logs on page load
+  loadLogs();
 }})();
 </script>
 </body>
