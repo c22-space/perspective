@@ -922,14 +922,7 @@ impl PerspectiveEngine {
 
         // Store extracted facts under the same tenant as the source document
         let fact_count = facts.len();
-        let mut stored = 0usize;
-        let mut skipped_low_confidence = 0usize;
         for (item, fact) in items.iter().zip(&facts) {
-            if fact.confidence < 0.3 {
-                skipped_low_confidence += 1;
-                continue;
-            }
-
             let store_req = StoreRequest {
                 tenant_id: item.0.clone(),
                 content: fact.fact.clone(),
@@ -940,13 +933,6 @@ impl PerspectiveEngine {
                     m.insert(
                         "source".to_string(),
                         serde_json::Value::String("extraction".to_string()),
-                    );
-                    m.insert(
-                        "confidence".to_string(),
-                        serde_json::Value::Number(
-                            serde_json::Number::from_f64(fact.confidence as f64)
-                                .unwrap_or_else(|| serde_json::Number::from(0)),
-                        ),
                     );
                     m.insert(
                         "entities".to_string(),
@@ -965,21 +951,12 @@ impl PerspectiveEngine {
             };
 
             let _ = self.store(store_req).await;
-            stored += 1;
-        }
-
-        if skipped_low_confidence > 0 {
-            tracing::warn!(
-                "Extraction: {}/{} facts dropped (confidence < 0.3)",
-                skipped_low_confidence,
-                fact_count
-            );
         }
 
         self.monitor.record_event(
             "extraction",
             Some("llm"),
-            Some(&format!("{} facts stored, {} dropped (low confidence)", stored, skipped_low_confidence)),
+            Some(&format!("{} facts extracted", fact_count)),
             true,
         );
 

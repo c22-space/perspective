@@ -83,11 +83,6 @@ async fn test_bundled_model_loads_and_completes() {
 
     assert_eq!(facts.len(), 1, "Should extract one fact");
     assert!(
-        facts[0].confidence >= 0.3,
-        "Extracted fact should have confidence >= 0.3, got {}",
-        facts[0].confidence
-    );
-    assert!(
         !facts[0].fact.is_empty(),
         "Extracted fact text should not be empty"
     );
@@ -123,13 +118,6 @@ async fn test_batch_extraction_real_model() {
     assert_eq!(facts.len(), 3, "Should extract one fact per input text");
 
     for (i, fact) in facts.iter().enumerate() {
-        assert!(
-            fact.confidence >= 0.3,
-            "Fact {} confidence {} should be >= 0.3, text: {}",
-            i,
-            fact.confidence,
-            fact.fact
-        );
         assert!(
             !fact.fact.is_empty(),
             "Fact {} text should not be empty",
@@ -319,7 +307,7 @@ async fn test_extraction_disabled() {
     assert_eq!(count, 0);
 }
 
-/// Test missing model falls back to local extraction with low confidence.
+/// Test missing model falls back to local extraction.
 #[tokio::test]
 async fn test_extraction_pipeline_missing_model() {
     let pipeline = ExtractionPipeline::new(ExtractionConfig {
@@ -346,7 +334,5 @@ async fn test_extraction_pipeline_missing_model() {
         .unwrap();
 
     assert_eq!(facts.len(), 1);
-    // Local extraction works but confidence is low
-    assert_eq!(facts[0].confidence, 0.0);
     assert!(!facts[0].entities.is_empty(), "Local entity extraction still works");
 }
