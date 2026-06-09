@@ -141,6 +141,11 @@ impl ExtractionPipeline {
     /// Extract using the bundled model: load, process, unload.
     async fn extract_batch_bundled(&self, texts: &[&str]) -> Result<Vec<ExtractedFact>> {
         let model_path = self.resolved_model_path();
+        // Log entry to file
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/perspective_extract.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "[EXTRACT] entering bundled path, model_path={}, texts={}", model_path.display(), texts.len());
+        }
         if !model_path.exists() {
             warn!(
                 "Bundled model not found at {}. Falling back to local extraction.",
@@ -167,11 +172,20 @@ impl ExtractionPipeline {
 
             match llm.complete(&prompt) {
                 Ok(raw_content) => {
+                    // Log to file for debugging
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/perspective_extract.log") {
+                        use std::io::Write;
+                        let _ = writeln!(f, "[EXTRACT] raw: {}", truncate(&raw_content, 300));
+                    }
                     let (fact_text, confidence) =
                         parse_llm_json(&raw_content).unwrap_or_else(|| {
                             debug!("LLM response was not valid JSON, using raw content");
                             (raw_content.to_string(), 0.5)
                         });
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/perspective_extract.log") {
+                        use std::io::Write;
+                        let _ = writeln!(f, "[EXTRACT] confidence={confidence:.3}, fact='{}'", truncate(&fact_text, 150));
+                    }
 
                     let entities = extract_entities(text);
                     let relations = extract_relations(text, &entities);
