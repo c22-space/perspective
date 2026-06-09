@@ -426,6 +426,34 @@ fn run_dashboard_server(
                         u if u.starts_with("/api/tenants") => {
                             serde_json::json!(["hermes"]) // list_tenants is async, use hardcoded for now
                         }
+                        u if u.starts_with("/api/logs") => {
+                            let limit = parse_qs(&url, "limit", 100usize);
+                            let filter = parse_qs_str(&url, "filter", "");
+                            let config = engine.get_config_response();
+                            let data_dir = std::path::PathBuf::from(
+                                config.storage.get("data_dir").cloned().unwrap_or_default()
+                            );
+                            let log_path = data_dir.join("perspective.log");
+                            let result = match std::fs::read_to_string(&log_path) {
+                                Ok(content) => {
+                                    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+                                    if !filter.is_empty() {
+                                        lines = lines.into_iter()
+                                            .filter(|l| l.to_lowercase().contains(&filter.to_lowercase()))
+                                            .collect();
+                                    }
+                                    let total = lines.len();
+                                    if lines.len() > limit {
+                                        lines = lines.split_off(lines.len() - limit);
+                                    }
+                                    serde_json::json!({"lines": lines, "total": total, "log_path": log_path.display().to_string()})
+                                }
+                                Err(e) => {
+                                    serde_json::json!({"lines": [format!("Log file not available: {e}")], "total": 0, "log_path": log_path.display().to_string()})
+                                }
+                            };
+                            result
+                        }
                         _ => serde_json::json!({"error": "Not found"}),
                     }
                 } else {
