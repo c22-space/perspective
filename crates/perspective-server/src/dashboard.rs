@@ -109,10 +109,9 @@ pub fn dashboard_html(stats_json: &str) -> String {
 
   <div class="card">
     <h2>Recent Activity</h2>
-    <table>
-      <thead><tr><th>Time</th><th>Tenant</th><th>Type</th><th>Content</th></tr></thead>
-      <tbody id="activity-table"><tr><td colspan="4" style="color:#666">No activity yet</td></tr></tbody>
-    </table>
+    <div id="activity-list" style="font-size:0.85rem">
+      <div style="color:#666;padding:16px 0;text-align:center">No activity yet</div>
+    </div>
   </div>
 
   <p class="footer">Perspective Memory Engine &mdash; dashboard auto-refreshes every 5s</p>
@@ -169,17 +168,53 @@ pub fn dashboard_html(stats_json: &str) -> String {
 
     // Recent activity
     var activity = data.recent_activity || [];
-    var abody = document.getElementById('activity-table');
+    var alist = document.getElementById('activity-list');
     if (activity.length === 0) {{
-      abody.innerHTML = '<tr><td colspan="4" style="color:#666">No activity yet</td></tr>';
+      alist.innerHTML = '<div style="color:#666;padding:16px 0;text-align:center">No activity yet</div>';
     }} else {{
-      abody.innerHTML = '';
-      activity.forEach(function(a) {{
-        var tr = document.createElement('tr');
+      alist.innerHTML = '';
+      activity.forEach(function(a, idx) {{
         var ts = a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : '—';
-        tr.innerHTML = '<td>' + ts + '</td><td>' + (a.tenant_id || '—') + '</td>' +
-                       '<td>' + (a.memory_type || '—') + '</td><td>' + (a.content || '').substring(0, 80) + '</td>';
-        abody.appendChild(tr);
+        var details = null;
+        try {{ details = a.details_json ? JSON.parse(a.details_json) : null; }} catch(e) {{}}
+        var preview = (details && (details.query || details.content)) || (a.content || '').substring(0, 80) || '—';
+
+        var row = document.createElement('div');
+        row.style.cssText = 'padding:6px 8px;border-bottom:1px solid #1f2233;cursor:pointer;display:flex;align-items:center;gap:12px;';
+        row.onmouseover = function() {{ row.style.background = '#1a1d27'; }};
+        row.onmouseout = function() {{ row.style.background = ''; }};
+
+        var opColor = a.operation === 'store' ? '#22c55e' : a.operation === 'recall' ? '#3b82f6' : a.operation === 'reflect' ? '#f59e0b' : '#888';
+
+        row.innerHTML = '<span style="color:#666;font-size:0.75rem;width:60px;flex-shrink:0">' + ts + '</span>' +
+          '<span style="background:' + opColor + '22;color:' + opColor + ';padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:500">' + (a.operation || '—') + '</span>' +
+          '<span style="color:#aaa;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + preview + '</span>' +
+          (details ? '<span style="color:#555;font-size:0.75rem;flex-shrink:0">▸</span>' : '');
+
+        if (details) {{
+          var expanded = false;
+          var detailDiv = document.createElement('div');
+          detailDiv.style.cssText = 'display:none;margin:4px 0 4px 72px;padding:10px;background:#1a1d27;border:1px solid #2a2d3a;border-radius:6px;font-size:0.75rem;color:#aaa;';
+          var detailHtml = '';
+          if (details.query) detailHtml += '<div><span style="color:#666">Query: </span>' + details.query + '</div>';
+          if (details.result_count != null) detailHtml += '<div><span style="color:#666">Results: </span>' + details.result_count + '</div>';
+          if (details.budget) detailHtml += '<div><span style="color:#666">Budget: </span>' + details.budget + '</div>';
+          if (details.content) detailHtml += '<div><span style="color:#666">Content: </span>' + details.content + '</div>';
+          if (details.memory_type) detailHtml += '<div><span style="color:#666">Type: </span>' + details.memory_type + '</div>';
+          if (details.entities && details.entities.length) detailHtml += '<div><span style="color:#666">Entities: </span>' + details.entities.join(', ') + '</div>';
+          if (details.fact_count != null) detailHtml += '<div><span style="color:#666">Facts: </span>' + details.fact_count + '</div>';
+          detailDiv.innerHTML = detailHtml;
+
+          row.onclick = function() {{
+            expanded = !expanded;
+            detailDiv.style.display = expanded ? 'block' : 'none';
+            row.querySelector('span:last-child').textContent = expanded ? '▾' : '▸';
+          }};
+          alist.appendChild(row);
+          alist.appendChild(detailDiv);
+        }} else {{
+          alist.appendChild(row);
+        }}
       }});
     }}
   }}
