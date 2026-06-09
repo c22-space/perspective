@@ -206,6 +206,7 @@ async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String
     let req: StoreApiRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => {
+            tracing::warn!("Store request parse error: {e}");
             let resp = ErrorResponse {
                 error: format!("Invalid request body: {e}"),
             };
@@ -232,6 +233,7 @@ async fn handle_store(engine: &PerspectiveEngine, body: &str) -> (String, String
 
     match engine.store(store_req).await {
         Ok(id) => {
+            tracing::info!("Stored memory {id} (tenant={})", req.tenant_id);
             let resp = StoreApiResponse { id: id.to_string() };
             (
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
@@ -545,9 +547,50 @@ fn print_status_table(status: &StatusPayload, config: &Config) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
+
+    // Load config early to get data_dir for log file
+    let early_config = load_config(cli.config.as_deref());
+    let log_dir = if let Some(ref d) = cli.data_dir {
+        d.clone()
+    } else {
+        early_config.storage.data_dir.clone()
+    };
+
+    // Set up dual logging: stdout (for terminal) + file (for debugging)
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("perspective.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
+
+    use tracing_subscriber::fmt;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let stdout_layer = fmt::layer()
+        .with_target(false)
+        .with_ansi(true);
+
+    if let Some(file) = log_file {
+        let file_layer = fmt::layer()
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file));
+
+        tracing_subscriber::registry()
+            .with(stdout_layer)
+            .with(file_layer)
+            .init();
+        tracing::info!("Logging to {}", log_path.display());
+    } else {
+        tracing_subscriber::registry()
+            .with(stdout_layer)
+            .init();
+        eprintln!("Warning: could not open log file, logging to stdout only");
+    }
 
     match cli.command {
         Commands::Serve {
@@ -658,6 +701,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let parts: Vec<&str> = first_line.split_whitespace().collect();
                         let method = parts.first().copied().unwrap_or("");
                         let path = parts.get(1).copied().unwrap_or("/");
+                        tracing::debug!("{} {}", method, path);
 
                         let (status_line, body) = if method == "OPTIONS" {
                             // CORS preflight
