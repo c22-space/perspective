@@ -55,20 +55,18 @@ struct ChatResponseMessage {
 /// Main extraction pipeline that calls an LLM to extract structured facts.
 ///
 /// Supports two modes:
-/// - **Bundled model**: Uses a local GGUF via llama.cpp (no external dependencies).
+/// - **Bundled model**: Loads a local GGUF on demand, runs inference, unloads.
 /// - **External endpoint**: Uses an OpenAI-compatible HTTP API (fallback).
 pub struct ExtractionPipeline {
     config: ExtractionConfig,
     /// HTTP client for external endpoint mode.
     client: reqwest::Client,
-    /// Bundled local model for in-process inference.
-    bundled: Option<BundledLlm>,
 }
 
 impl ExtractionPipeline {
     /// Create a new pipeline from configuration.
     ///
-    /// If `config.endpoint` is empty, attempts to load the bundled model.
+    /// If `config.endpoint` is empty, uses bundled model mode (loaded on demand).
     /// If `config.endpoint` is set, uses HTTP mode (external LLM server).
     pub fn new(config: ExtractionConfig) -> Self {
         let client = reqwest::Client::builder()
@@ -76,79 +74,125 @@ impl ExtractionPipeline {
             .build()
             .expect("Failed to build HTTP client");
 
-        // Determine mode: bundled or external
-        let bundled = if config.endpoint.is_empty() {
-            // Try to load the bundled model
-            // Resolve model_path: try as-is first (absolute), then relative to CWD
-            let model_path = std::path::Path::new(&config.model_path);
-            let resolved_path = if model_path.is_absolute() {
-                model_path.to_path_buf()
-            } else {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join(model_path)
-            };
-            if resolved_path.exists() {
-                match BundledLlm::load(&resolved_path, config.max_tokens, config.n_ctx) {
-                    Ok(llm) => {
-                        tracing::info!(
-                            "Extraction pipeline: bundled model mode ({})",
-                            resolved_path.display()
-                        );
-                        Some(llm)
-                    }
-                    Err(e) => {
-                        warn!("Failed to load bundled model: {e}. Extraction will be disabled.");
-                        None
-                    }
-                }
-            } else {
-                warn!(
-                    "Bundled model not found at {}. Extraction will be disabled.",
-                    resolved_path.display()
-                );
-                None
-            }
+        if config.endpoint.is_empty() {
+            tracing::info!(
+                "Extraction pipeline: bundled model mode (model_path={})",
+                config.model_path
+            );
         } else {
             tracing::info!(
                 "Extraction pipeline: external endpoint mode ({})",
                 config.endpoint
             );
-            None
-        };
+        }
 
-        Self {
-            config,
-            client,
-            bundled,
+        Self { config, client }
+    }
+
+    /// Returns true if the bundled model is available (exists on disk).
+    pub fn has_bundled_model(&self) -> bool {
+        if !self.config.endpoint.is_empty() {
+            return false;
+        }
+        let path = self.resolved_model_path();
+        path.exists()
+    }
+
+    /// Resolve the model path relative to CWD.
+    fn resolved_model_path(&self) -> std::path::PathBuf {
+        let p = std::path::Path::new(&self.config.model_path);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(p)
         }
     }
 
     /// Extract structured facts from a batch of texts via the LLM.
     ///
-    /// Each text is sent to the LLM and the response is parsed into [`ExtractedFact`] items.
+    /// Loads the bundled model (if available), processes all texts, then unloads.
+    /// For external endpoints, uses HTTP without model lifecycle management.
     pub async fn extract_batch(&self, texts: &[&str]) -> Result<Vec<ExtractedFact>> {
         if texts.is_empty() {
             return Ok(vec![]);
         }
 
+        // For bundled mode: load model, process batch, unload
+        if self.config.endpoint.is_empty() {
+            return self.extract_batch_bundled(texts).await;
+        }
+
+        // For external endpoint: process via HTTP
         let mut facts = Vec::with_capacity(texts.len());
         for text in texts {
-            match self.extract_single(text).await {
+            match self.extract_single_http(text).await {
                 Ok(fact) => facts.push(fact),
                 Err(e) => {
                     warn!("Extraction failed for text '{}': {}", truncate(text, 80), e);
-                    // Still produce a basic fact so downstream can handle it
-                    facts.push(ExtractedFact {
-                        source_text: text.to_string(),
-                        fact: text.to_string(),
-                        confidence: 0.0,
-                        entities: extract_entities(text).into_iter().map(|e| e.name).collect(),
-                        relations: extract_relations(text, &extract_entities(text)),
-                    });
+                    facts.push(fallback_fact(text));
                 }
             }
         }
+        Ok(facts)
+    }
+
+    /// Extract using the bundled model: load, process, unload.
+    async fn extract_batch_bundled(&self, texts: &[&str]) -> Result<Vec<ExtractedFact>> {
+        let model_path = self.resolved_model_path();
+        if !model_path.exists() {
+            warn!(
+                "Bundled model not found at {}. Falling back to local extraction.",
+                model_path.display()
+            );
+            return Ok(texts.iter().map(|t| fallback_fact(t)).collect());
+        }
+
+        // Load model
+        let llm = BundledLlm::load(&model_path, self.config.max_tokens, self.config.n_ctx)
+            .map_err(|e| {
+                PerspectiveError::LlmApi(format!("Failed to load bundled model: {e}"))
+            })?;
+
+        // Process all texts
+        let mut facts = Vec::with_capacity(texts.len());
+        for text in texts {
+            let prompt = format!(
+                "Extract a concise factual statement from the following text. \
+                 Return a JSON object with keys: \"fact\" (string), \"confidence\" (float 0-1).\n\n\
+                 Text: \"{}\"",
+                text.replace('\\', "\\\\").replace('"', "\\\"")
+            );
+
+            match llm.complete(&prompt) {
+                Ok(raw_content) => {
+                    let (fact_text, confidence) =
+                        parse_llm_json(&raw_content).unwrap_or_else(|| {
+                            debug!("LLM response was not valid JSON, using raw content");
+                            (raw_content.to_string(), 0.5)
+                        });
+
+                    let entities = extract_entities(text);
+                    let relations = extract_relations(text, &entities);
+
+                    facts.push(ExtractedFact {
+                        source_text: text.to_string(),
+                        fact: fact_text,
+                        confidence,
+                        entities: entities.into_iter().map(|e| e.name).collect(),
+                        relations,
+                    });
+                }
+                Err(e) => {
+                    warn!("Extraction failed for text '{}': {}", truncate(text, 80), e);
+                    facts.push(fallback_fact(text));
+                }
+            }
+        }
+
+        // Model is dropped here (unloaded from memory)
+        drop(llm);
 
         Ok(facts)
     }
@@ -217,8 +261,8 @@ impl ExtractionPipeline {
         true
     }
 
-    /// Extract a fact from a single piece of text.
-    async fn extract_single(&self, text: &str) -> Result<ExtractedFact> {
+    /// Extract via external HTTP endpoint (OpenAI-compatible).
+    async fn extract_single_http(&self, text: &str) -> Result<ExtractedFact> {
         let prompt = format!(
             "Extract a concise factual statement from the following text. \
              Return a JSON object with keys: \"fact\" (string), \"confidence\" (float 0-1).\n\n\
@@ -226,46 +270,11 @@ impl ExtractionPipeline {
             text.replace('\\', "\\\\").replace('"', "\\\"")
         );
 
-        // Choose extraction mode: bundled model or external HTTP
-        let raw_content = if let Some(ref bundled) = self.bundled {
-            // Bundled model: synchronous in-process inference
-            bundled.complete(&prompt)?
-        } else if !self.config.endpoint.is_empty() {
-            // External endpoint: HTTP request to OpenAI-compatible API
-            self.extract_via_http(&prompt).await?
-        } else {
-            // No model available at all
-            return Err(PerspectiveError::LlmApi(
-                "No extraction model available (bundled model not loaded, no external endpoint configured)".into()
-            ));
-        };
-
-        // Try to parse the LLM response as JSON; fall back to using raw text
-        let (fact_text, confidence) = parse_llm_json(&raw_content).unwrap_or_else(|| {
-            debug!("LLM response was not valid JSON, using raw content");
-            (raw_content.to_string(), 0.5)
-        });
-
-        // Also extract entities and relations locally
-        let entities = extract_entities(text);
-        let relations = extract_relations(text, &entities);
-
-        Ok(ExtractedFact {
-            source_text: text.to_string(),
-            fact: fact_text,
-            confidence,
-            entities: entities.into_iter().map(|e| e.name).collect(),
-            relations,
-        })
-    }
-
-    /// Extract via external HTTP endpoint (OpenAI-compatible).
-    async fn extract_via_http(&self, prompt: &str) -> Result<String> {
         let request = ChatRequest {
             model: self.config.model.clone(),
             messages: vec![ChatMessage {
                 role: "user".into(),
-                content: prompt.to_string(),
+                content: prompt,
             }],
             temperature: 0.1,
             max_tokens: self.config.max_tokens,
@@ -314,7 +323,34 @@ impl ExtractionPipeline {
             .map(|c| c.message.content.as_str())
             .unwrap_or("");
 
-        Ok(raw_content.to_string())
+        let (fact_text, confidence) = parse_llm_json(raw_content).unwrap_or_else(|| {
+            debug!("LLM response was not valid JSON, using raw content");
+            (raw_content.to_string(), 0.5)
+        });
+
+        let entities = extract_entities(text);
+        let relations = extract_relations(text, &entities);
+
+        Ok(ExtractedFact {
+            source_text: text.to_string(),
+            fact: fact_text,
+            confidence,
+            entities: entities.into_iter().map(|e| e.name).collect(),
+            relations,
+        })
+    }
+}
+
+/// Create a fallback fact when LLM extraction fails.
+fn fallback_fact(text: &str) -> ExtractedFact {
+    let entities = extract_entities(text);
+    let relations = extract_relations(text, &entities);
+    ExtractedFact {
+        source_text: text.to_string(),
+        fact: text.to_string(),
+        confidence: 0.0,
+        entities: entities.into_iter().map(|e| e.name).collect(),
+        relations,
     }
 }
 
@@ -441,5 +477,13 @@ mod tests {
     fn test_parse_llm_json_invalid() {
         let result = parse_llm_json("just plain text");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_fallback_fact() {
+        let fact = fallback_fact("Alice mentioned the project deadline");
+        assert_eq!(fact.fact, "Alice mentioned the project deadline");
+        assert_eq!(fact.confidence, 0.0);
+        assert!(!fact.entities.is_empty());
     }
 }
