@@ -13,7 +13,7 @@ Graph + vector hybrid. Typed memory. LLM-powered extraction. Built in Rust.
 3. **Graph + vector, not graph or vector.** Vectors handle semantic retrieval. The graph handles relationships, consolidation, and entity-based queries.
 4. **Decay is first-class.** Memories fade unless accessed. Ebbinghaus-style forgetting prevents unbounded accumulation.
 5. **LLM extraction with cost control.** Smart batching and importance gating keep extraction quality high without per-turn LLM costs.
-6. **Standalone engine.** Usable as an embedded library or client-server. First-class Hermes integration, but framework-agnostic.
+6. **Standalone engine.** Usable as an embedded library with built-in HTTP server. First-class Hermes integration, but framework-agnostic. HTTP server auto-starts on port 2085 when the engine is created.
 
 ---
 
@@ -24,8 +24,9 @@ Graph + vector hybrid. Typed memory. LLM-powered extraction. Built in Rust.
 │                    Perspective Engine                     │
 │                                                          │
 │  ┌──────────┐  ┌──────────┐  ┌────────────────────────┐│
-│  │  gRPC    │  │ Embedded │  │    Hermes Plugin        ││
+│  │  HTTP    │  │ Embedded │  │    Hermes Plugin        ││
 │  │  Server  │  │  API     │  │  (MemoryProvider impl)  ││
+│  │ :2085    │  │          │  │                         ││
 │  └────┬─────┘  └────┬─────┘  └───────────┬────────────┘│
 │       │              │                    │              │
 │       └──────────────┴────────────────────┘              │
@@ -100,16 +101,16 @@ perspective/
 │   │   │   │   ├── promotion.rs  # Episodic -> semantic promotion
 │   │   │   │   ├── dedup.rs      # Duplicate detection + merge
 │   │   │   │   └── communities.rs # Leiden community detection
-│   │   │   └── embedding/
-│   │   │       ├── mod.rs
-│   │   │       └── local.rs      # Local embedding model (fastembed)
+│   │   │   ├── embedding/
+│   │   │   │   ├── mod.rs
+│   │   │   │   └── local.rs      # Local embedding model (fastembed)
+│   │   │   ├── server.rs         # HTTP server (auto-starts on :2085)
+│   │   │   └── static_files.rs   # Dashboard static file serving
 │   │   └── Cargo.toml
 │   │
-│   ├── perspective-server/       # gRPC server (client-server mode)
+│   ├── perspective-server/       # CLI tool (init, status, config)
 │   │   ├── src/
-│   │   │   ├── main.rs          # CLI (clap), gRPC server, commands
-│   │   │   ├── dashboard.rs     # HTTP dashboard serving
-│   │   │   └── static_files.rs  # Embedded static file serving
+│   │   │   └── main.rs          # CLI commands only (init, status, config)
 │   │   └── Cargo.toml
 │   │
 │   └── perspective-plugin/       # Hermes MemoryProvider plugin
@@ -467,37 +468,30 @@ llm_batch_interval = "30s"
 
 ---
 
-## gRPC API
+## HTTP API
 
-```protobuf
-service Perspective {
-  // Memory operations
-  rpc Store(StoreRequest) returns (StoreResponse);
-  rpc Recall(RecallRequest) returns (RecallResponse);
-  rpc GetMemory(GetMemoryRequest) returns (Memory);
-  rpc UpdateMemory(UpdateMemoryRequest) returns (UpdateMemoryResponse);
-  rpc DeleteMemory(DeleteMemoryRequest) returns (DeleteMemoryResponse);
+The engine exposes a REST API on port 2085 when running. No separate server process needed.
 
-  // Session management
-  rpc StartSession(StartSessionRequest) returns (Session);
-  rpc EndSession(EndSessionRequest) returns (EndSessionResponse);
+### Endpoints
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/store` | Store a memory |
+| POST | `/api/recall` | Recall memories by query |
+| POST | `/api/reflect` | Synthesize memories for a query |
+| GET | `/api/health` | Health check |
+| GET | `/api/status` | Engine status (uptime, counts, config) |
+| GET | `/api/tenants` | List all tenants |
+| GET | `/api/activity` | Recent activity events |
+| GET | `/api/activity/:id` | Single activity event detail |
+| GET | `/api/processes` | Background process status |
+| GET | `/api/logs` | Server logs (read from perspective.log) |
+| GET | `/api/graph` | Graph statistics |
+| GET | `/api/config` | Current configuration |
+| GET | `/api/memories` | List memories with optional search |
+| GET | `/*` | Dashboard static files (SPA) |
 
-  // Reflection
-  rpc Reflect(ReflectRequest) returns (ReflectResponse);
-
-  // Tenant management
-  rpc CreateTenant(CreateTenantRequest) returns (Tenant);
-  rpc DeleteTenant(DeleteTenantRequest) returns (DeleteTenantResponse);
-  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
-
-  // Consolidation
-  rpc TriggerConsolidation(ConsolidationRequest) returns (ConsolidationResponse);
-  rpc GetConsolidationStatus(StatusRequest) returns (ConsolidationStatus);
-
-  // Health
-  rpc Health(HealthRequest) returns (HealthResponse);
-}
-```
+### Auto-start
+The HTTP server starts automatically when `PerspectiveEngine` is created via the Python plugin. No `perspective serve` command needed.
 
 ---
 
@@ -572,7 +566,7 @@ No Docker. No network. Single binary with embedded Qdrant and redb.
 | Embeddings (local) | fastembed | MIT | Local ONNX inference |
 | LLM (local) | llama-cpp-2 | MIT | Bundled GGUF inference |
 | Serialization | serde + bincode | MIT | Fast binary serialization |
-| gRPC | tonic | MIT | Rust gRPC framework |
+|| HTTP server | tokio TcpListener | MIT | Raw TCP HTTP (no framework) |
 | Runtime | tokio | MIT | Async runtime |
 | CLI | clap | MIT | Argument parsing |
 
@@ -593,3 +587,5 @@ All architectural questions have been resolved:
 5. **Flexible schema versioning**: Memories stored as JSON with required fields. New fields are optional and backward compatible. No migration scripts needed. Engine reads any version, writes latest.
 
 6. **Consolidation LLM prompts**: To be iterated during implementation. Quality depends heavily on prompt engineering. Dedicated iteration cycle during consolidation system build.
+
+7. **HTTP server built into engine**: The HTTP server lives in `perspective-core/src/server.rs` and auto-starts on port 2085 when the engine is created. No separate `perspective serve` command. Dashboard files are copied to `data_dir/dashboard/` on first init.

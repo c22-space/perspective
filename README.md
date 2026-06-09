@@ -20,7 +20,7 @@ Perspective is a standalone memory engine that gives AI agents persistent, struc
 - **LLM extraction** — Bundled local model (NuExtract) or external API. Smart batching and importance gating keep costs low.
 - **Consolidation** — Automatic deduplication, community detection, episodic-to-semantic promotion
 - **Multi-tenant** — Collection-based isolation for multiple agents/users
-- **Dual mode** — Embedded library or client-server (gRPC)
+- **Built-in HTTP server** — Auto-starts on port 2085, serves dashboard + API
 
 ---
 
@@ -44,10 +44,14 @@ cargo build
 cargo test
 ```
 
-### Run the Server
+### Start the Engine
 
-```bash
-cargo run -p perspective-server
+```python
+from perspective_python import PerspectiveEngine
+
+engine = PerspectiveEngine("/path/to/data")
+# HTTP server auto-starts on port 2085
+# Dashboard available at http://localhost:2085
 ```
 
 ---
@@ -61,7 +65,7 @@ perspective/
 ├── AGENTS.md                     # Agent guidelines
 ├── crates/
 │   ├── perspective-core/         # Core engine library
-│   ├── perspective-server/       # gRPC server + dashboard
+│   ├── perspective-server/       # CLI tool (init, status, config)
 │   ├── perspective-plugin/       # Hermes MemoryProvider plugin
 │   └── perspective-python/       # Python bindings
 ├── dashboard/                    # React + TypeScript dashboard
@@ -76,7 +80,7 @@ perspective/
 | Crate | Purpose |
 |-------|---------|
 | `perspective-core` | Core engine: types, storage, retrieval, extraction, decay, consolidation |
-| `perspective-server` | gRPC server with health checks and embedded dashboard |
+|| `perspective-server` | CLI tool (init, status, config) |
 | `perspective-plugin` | Hermes integration via `MemoryProvider` trait |
 | `perspective-python` | Python bindings (PyO3) |
 
@@ -92,6 +96,8 @@ perspective/
 ## Dashboard
 
 The `dashboard/` directory contains a React + TypeScript + Vite app for monitoring and exploring memory.
+
+When the engine starts, dashboard files are automatically copied to `data_dir/dashboard/` and served on port 2085.
 
 ```bash
 cd dashboard
