@@ -13,8 +13,6 @@ pub struct ExtractedFact {
     pub source_text: String,
     /// A concise statement of the fact.
     pub fact: String,
-    /// Confidence in the extraction (0.0-1.0).
-    pub confidence: f32,
     /// Extracted entities referenced by this fact.
     pub entities: Vec<String>,
     /// Extracted subject-predicate-object triples.
@@ -158,19 +156,20 @@ impl ExtractionPipeline {
         // Process all texts
         let mut facts = Vec::with_capacity(texts.len());
         for text in texts {
+            // NuExtract uses a specific prompt format: <|input|> with ### Template: and ### Text:
+            // The model is trained to fill in empty string fields in the JSON template.
+            let template = serde_json::json!({"fact": ""}).to_string();
             let prompt = format!(
-                "Extract a concise factual statement from the following text. \
-                 Return a JSON object with keys: \"fact\" (string), \"confidence\" (float 0-1).\n\n\
-                 Text: \"{}\"",
-                text.replace('\\', "\\\\").replace('"', "\\\"")
+                "<|input|>\n### Template:\n{}\n### Text:\n{}\n\n<|output|>",
+                template, text
             );
 
             match llm.complete(&prompt) {
                 Ok(raw_content) => {
-                    let (fact_text, confidence) =
+                    let fact_text =
                         parse_llm_json(&raw_content).unwrap_or_else(|| {
                             debug!("LLM response was not valid JSON, using raw content");
-                            (raw_content.to_string(), 0.5)
+                            raw_content.to_string()
                         });
 
                     let entities = extract_entities(text);
@@ -179,7 +178,6 @@ impl ExtractionPipeline {
                     facts.push(ExtractedFact {
                         source_text: text.to_string(),
                         fact: fact_text,
-                        confidence,
                         entities: entities.into_iter().map(|e| e.name).collect(),
                         relations,
                     });
@@ -263,11 +261,10 @@ impl ExtractionPipeline {
 
     /// Extract via external HTTP endpoint (OpenAI-compatible).
     async fn extract_single_http(&self, text: &str) -> Result<ExtractedFact> {
+        let template = serde_json::json!({"fact": ""}).to_string();
         let prompt = format!(
-            "Extract a concise factual statement from the following text. \
-             Return a JSON object with keys: \"fact\" (string), \"confidence\" (float 0-1).\n\n\
-             Text: \"{}\"",
-            text.replace('\\', "\\\\").replace('"', "\\\"")
+            "<|input|>\n### Template:\n{}\n### Text:\n{}\n\n<|output|>",
+            template, text
         );
 
         let request = ChatRequest {
@@ -323,9 +320,9 @@ impl ExtractionPipeline {
             .map(|c| c.message.content.as_str())
             .unwrap_or("");
 
-        let (fact_text, confidence) = parse_llm_json(raw_content).unwrap_or_else(|| {
+        let fact_text = parse_llm_json(raw_content).unwrap_or_else(|| {
             debug!("LLM response was not valid JSON, using raw content");
-            (raw_content.to_string(), 0.5)
+            raw_content.to_string()
         });
 
         let entities = extract_entities(text);
@@ -334,7 +331,6 @@ impl ExtractionPipeline {
         Ok(ExtractedFact {
             source_text: text.to_string(),
             fact: fact_text,
-            confidence,
             entities: entities.into_iter().map(|e| e.name).collect(),
             relations,
         })
@@ -348,22 +344,17 @@ fn fallback_fact(text: &str) -> ExtractedFact {
     ExtractedFact {
         source_text: text.to_string(),
         fact: text.to_string(),
-        confidence: 0.0,
         entities: entities.into_iter().map(|e| e.name).collect(),
         relations,
     }
 }
 
-/// Attempt to parse the LLM output as a JSON object with `fact` and `confidence`.
-fn parse_llm_json(raw: &str) -> Option<(String, f32)> {
+/// Attempt to parse the LLM output as a JSON object with `fact`.
+fn parse_llm_json(raw: &str) -> Option<String> {
     // Try direct parse
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
         let fact = val.get("fact")?.as_str()?.to_string();
-        let confidence = val
-            .get("confidence")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.5) as f32;
-        return Some((fact, confidence));
+        return Some(fact);
     }
 
     // Try to find a JSON object inside a longer string
@@ -372,15 +363,13 @@ fn parse_llm_json(raw: &str) -> Option<(String, f32)> {
     let slice = &raw[start..=end];
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(slice) {
         let fact = val.get("fact")?.as_str()?.to_string();
-        let confidence = val
-            .get("confidence")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.5) as f32;
-        return Some((fact, confidence));
+        return Some(fact);
     }
 
     None
 }
+
+
 
 /// Truncate a string for display purposes.
 fn truncate(s: &str, max_len: usize) -> &str {
@@ -456,20 +445,19 @@ mod tests {
 
     #[test]
     fn test_parse_llm_json_valid() {
-        let raw = r#"{"fact": "Alice prefers dark mode", "confidence": 0.9}"#;
+        let raw = r#"{"fact": "Alice prefers dark mode"}"#;
         let result = parse_llm_json(raw);
         assert!(result.is_some());
-        let (fact, conf) = result.unwrap();
+        let fact = result.unwrap();
         assert_eq!(fact, "Alice prefers dark mode");
-        assert!((conf - 0.9).abs() < 0.01);
     }
 
     #[test]
     fn test_parse_llm_json_embedded() {
-        let raw = "Here is the fact: {\"fact\": \"Bob likes Rust\", \"confidence\": 0.8} done.";
+        let raw = "Here is the fact: {\"fact\": \"Bob likes Rust\"} done.";
         let result = parse_llm_json(raw);
         assert!(result.is_some());
-        let (fact, _) = result.unwrap();
+        let fact = result.unwrap();
         assert_eq!(fact, "Bob likes Rust");
     }
 
@@ -479,11 +467,11 @@ mod tests {
         assert!(result.is_none());
     }
 
+
     #[test]
     fn test_fallback_fact() {
         let fact = fallback_fact("Alice mentioned the project deadline");
         assert_eq!(fact.fact, "Alice mentioned the project deadline");
-        assert_eq!(fact.confidence, 0.0);
         assert!(!fact.entities.is_empty());
     }
 }

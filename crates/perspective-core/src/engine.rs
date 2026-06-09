@@ -923,10 +923,6 @@ impl PerspectiveEngine {
         // Store extracted facts under the same tenant as the source document
         let fact_count = facts.len();
         for (item, fact) in items.iter().zip(&facts) {
-            if fact.confidence < 0.3 {
-                continue;
-            }
-
             let store_req = StoreRequest {
                 tenant_id: item.0.clone(),
                 content: fact.fact.clone(),
@@ -937,13 +933,6 @@ impl PerspectiveEngine {
                     m.insert(
                         "source".to_string(),
                         serde_json::Value::String("extraction".to_string()),
-                    );
-                    m.insert(
-                        "confidence".to_string(),
-                        serde_json::Value::Number(
-                            serde_json::Number::from_f64(fact.confidence as f64)
-                                .unwrap_or_else(|| serde_json::Number::from(0)),
-                        ),
                     );
                     m.insert(
                         "entities".to_string(),
