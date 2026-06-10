@@ -107,10 +107,18 @@ function ActivityItem({ event }: { event: { timestamp: string; event_type: strin
               <span className="text-zinc-300">{details.tags.join(', ')}</span>
             </div>
           )}
-          {details.entities && details.entities.length > 0 && (
-            <div className="flex gap-2">
-              <span className="text-zinc-500 shrink-0">Entities:</span>
-              <span className="text-zinc-300">{details.entities.join(', ')}</span>
+          {details.results && details.results.length > 0 && (
+            <div className="space-y-1.5">
+              <span className="text-zinc-500 text-xs">Results ({details.results.length}):</span>
+              {details.results.map((r: {id: string; content: string; type: string}, i: number) => (
+                <div key={i} className="ml-2 p-2 bg-zinc-900/50 rounded border border-zinc-700/30">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/20 text-blue-400">{r.type}</span>
+                    <span className="text-zinc-600 text-[10px]">{r.id.slice(0, 8)}</span>
+                  </div>
+                  <p className="text-zinc-300 text-xs">{r.content}</p>
+                </div>
+              ))}
             </div>
           )}
           {details.fact_count !== undefined && (

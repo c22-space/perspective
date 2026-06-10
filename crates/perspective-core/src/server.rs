@@ -672,6 +672,25 @@ pub fn start_background_with_config(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                     json,
                 )
+            } else if method == "GET" && path == "/api/graph/full" {
+                let resp = engine.get_full_graph();
+                let json = serde_json::to_string(&resp).unwrap_or_default();
+                (
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                    json,
+                )
+            } else if method == "GET" && path == "/api/processes" {
+                let resp = serde_json::json!({
+                    "extraction_queue": engine.monitor.extraction_queue(),
+                    "consolidation": engine.monitor.consolidation_status(),
+                    "consolidation_history": engine.monitor.consolidation_history(),
+                    "decay": engine.monitor.decay_status(),
+                });
+                let json = serde_json::to_string(&resp).unwrap_or_default();
+                (
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                    json,
+                )
             } else if method == "GET" && path == "/api/config" {
                 let resp = engine.get_config_response();
                 let json = serde_json::to_string(&resp).unwrap_or_default();
@@ -679,6 +698,35 @@ pub fn start_background_with_config(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
                     json,
                 )
+            } else if method == "POST" && path == "/api/settings" {
+                let body_str = extract_body(&request).to_string();
+                if let Ok(patch) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                    match engine.update_settings(&patch) {
+                        Ok(()) => {
+                            let resp = serde_json::json!({"ok": true, "config": engine.get_config_response()});
+                            let json = serde_json::to_string(&resp).unwrap_or_default();
+                            (
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                json,
+                            )
+                        }
+                        Err(e) => {
+                            let resp = serde_json::json!({"error": format!("{e}")});
+                            let json = serde_json::to_string(&resp).unwrap_or_default();
+                            (
+                                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                                json,
+                            )
+                        }
+                    }
+                } else {
+                    let resp = serde_json::json!({"error": "invalid JSON"});
+                    let json = serde_json::to_string(&resp).unwrap_or_default();
+                    (
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                        json,
+                    )
+                }
             } else if method == "GET" && path.starts_with("/api/memories") {
                 // Parse optional ?q= and ?limit= query params
                 let (q, limit) = if let Some(qs) = path.split_once('?') {

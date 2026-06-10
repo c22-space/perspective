@@ -61,10 +61,14 @@ export function useGraph() {
   return usePolling(() => api.getGraph(), 10000);
 }
 
+export function useFullGraph() {
+  return usePolling(() => api.getFullGraph(), 15000);
+}
+
 export function useMemories(q?: string) {
   return usePolling(() => api.getMemories(q), 10000);
 }
 
-export function useConfig() {
-  return useOnce(() => api.getConfig());
+export function useSettings() {
+  return useOnce(() => api.getSettings());
 }

@@ -452,6 +452,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let engine_arc = Arc::new(engine);
 
+            // Start background extraction loop (processes buffered LLM extractions)
+            if config.extraction.enabled {
+                let _ = engine_arc.clone().start_extraction_loop();
+            }
+
+            // Run missed decay if server was down at midnight
+            {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let secs_per_day = 86400u64;
+                let last_midnight = (now_secs / secs_per_day) * secs_per_day;
+                let hours_since_midnight = (now_secs - last_midnight) / 3600;
+                // If it's past 00:30 UTC and decay hasn't run today, run it now
+                if hours_since_midnight >= 0 && (now_secs - last_midnight) > 1800 {
+                    tracing::info!("decay: running missed decay from startup ({}h since midnight)", hours_since_midnight);
+                    let engine_for_decay = engine_arc.clone();
+                    tokio::spawn(async move {
+                        engine_for_decay.run_decay_tick().await;
+                    });
+                }
+            }
+
+            // Schedule daily decay at midnight UTC
+            {
+                let engine_clone = engine_arc.clone();
+                tokio::spawn(async move {
+                    loop {
+                        // Compute seconds until next midnight UTC
+                        let now_secs = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        let secs_per_day = 86400u64;
+                        let next_midnight = ((now_secs / secs_per_day) + 1) * secs_per_day;
+                        let sleep_secs = next_midnight - now_secs;
+                        tracing::info!(
+                            "decay: sleeping {}s until next midnight UTC",
+                            sleep_secs
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+                        engine_clone.run_decay_tick().await;
+                    }
+                });
+            }
+
             // Write PID file
             let pid = std::process::id();
             if let Err(e) = write_pid_file(pid) {

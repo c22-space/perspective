@@ -5,7 +5,7 @@ const nav = [
   { to: '/processes', label: 'Processes' },
   { to: '/graph', label: 'Graph' },
   { to: '/memories', label: 'Memories' },
-  { to: '/config', label: 'Config' },
+  { to: '/config', label: 'Settings' },
   { to: '/logs', label: 'Logs' },
 ];
 

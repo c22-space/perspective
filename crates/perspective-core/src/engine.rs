@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub struct PerspectiveEngine {
-    pub config: Config,
+    pub config: std::sync::RwLock<Config>,
     vector_store: Mutex<QdrantVectorStore>,
     graph_store: Option<Arc<GraphStore>>,
     text_store: Arc<TextStore>,
@@ -31,6 +31,8 @@ pub struct PerspectiveEngine {
     pub monitor: Arc<Monitor>,
     extraction_pipeline: Option<Arc<ExtractionPipeline>>,
     batcher: Mutex<ExtractionBatcher>,
+    stores_since_last_consolidation: std::sync::atomic::AtomicU64,
+    pending_consolidation: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +101,7 @@ impl PerspectiveEngine {
         let batcher = ExtractionBatcher::new(&config.extraction);
 
         Ok(Self {
-            config,
+            config: std::sync::RwLock::new(config),
             vector_store,
             graph_store: Some(graph_store),
             text_store,
@@ -107,6 +109,8 @@ impl PerspectiveEngine {
             monitor,
             extraction_pipeline,
             batcher: Mutex::new(batcher),
+            stores_since_last_consolidation: std::sync::atomic::AtomicU64::new(0),
+            pending_consolidation: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -153,7 +157,7 @@ impl PerspectiveEngine {
         let batcher = ExtractionBatcher::new(&config.extraction);
 
         Ok(Self {
-            config,
+            config: std::sync::RwLock::new(config),
             vector_store,
             graph_store,
             text_store,
@@ -161,11 +165,13 @@ impl PerspectiveEngine {
             monitor,
             extraction_pipeline,
             batcher: Mutex::new(batcher),
+            stores_since_last_consolidation: std::sync::atomic::AtomicU64::new(0),
+            pending_consolidation: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
-    pub fn config(&self) -> &Config {
-        &self.config
+    pub fn config(&self) -> std::sync::RwLockReadGuard<'_, Config> {
+        self.config.read().unwrap()
     }
 
     pub fn embedder(&self) -> &dyn Embedder {
@@ -294,7 +300,7 @@ impl PerspectiveEngine {
                         weight: 0.8,
                         created_at: now,
                         last_reinforced: now,
-                        decay_rate: self.config.decay.episodic_lambda,
+                        decay_rate: self.config().decay.episodic_lambda,
                     };
                     gs.save_edge(&req.tenant_id, &edge)?;
                 }
@@ -389,7 +395,7 @@ impl PerspectiveEngine {
             }
 
             // 5. Buffer for LLM extraction (processed by start_extraction_loop)
-            if self.config.extraction.enabled && self.extraction_pipeline.is_some() {
+            if self.config().extraction.enabled && self.extraction_pipeline.is_some() {
                 let pipeline = self.extraction_pipeline.as_ref().unwrap();
                 if pipeline.is_memorable(&req.content) {
                     if let Ok(mut batcher) = self.batcher.lock() {
@@ -401,6 +407,15 @@ impl PerspectiveEngine {
         } // end skip_extraction guard
 
         tracing::info!("store: complete id={id} tenant={}", req.tenant_id);
+
+        // Trigger consolidation every 100 memories
+        let count = self.stores_since_last_consolidation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if count >= 100 {
+            self.stores_since_last_consolidation.store(0, std::sync::atomic::Ordering::Relaxed);
+            self.pending_consolidation.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!("consolidation: flagged (100 stores reached)");
+        }
+
         Ok(id)
     }
 
@@ -417,7 +432,7 @@ impl PerspectiveEngine {
         );
         let recall_start = std::time::Instant::now();
         let _now = Utc::now();
-        let overfetch = budget * self.config.retrieval.vector_overfetch;
+        let overfetch = budget * self.config().retrieval.vector_overfetch;
 
         // 1. Vector search (embedded)
         let query_embedding = self
@@ -448,7 +463,7 @@ impl PerspectiveEngine {
         // 3. Reciprocal Rank Fusion via shared fusion module
         let vector_tuples: Vec<(Uuid, f32)> = vector_results.iter().map(|r| (r.id, r.score)).collect();
         let text_tuples: Vec<(Uuid, f32)> = text_results.iter().map(|r| (r.id, 0.0)).collect();
-        let mut sorted = rrf_fuse(&[vector_tuples, text_tuples], self.config.retrieval.rrf_k);
+        let mut sorted = rrf_fuse(&[vector_tuples, text_tuples], self.config().retrieval.rrf_k);
 
         tracing::debug!("recall: {} candidates after RRF fusion", sorted.len());
 
@@ -461,7 +476,7 @@ impl PerspectiveEngine {
                 use std::collections::HashSet;
 
                 let mut visited_entities: HashSet<Uuid> = HashSet::new();
-                let hop_budget = self.config.retrieval.graph_hop_limit;
+                let hop_budget = self.config().retrieval.graph_hop_limit;
 
                 // For each top result, follow Entity edges to find related memories
                 for (memory_id, score) in sorted.iter().take(budget) {
@@ -615,8 +630,8 @@ impl PerspectiveEngine {
         }
 
         // Apply Ebbinghaus decay: filter weak memories and reinforce accessed ones
-        if self.config.decay.enabled {
-            memories.retain(|m| memory_strength(m) >= self.config.decay.retrieval_threshold);
+        if self.config().decay.enabled {
+            memories.retain(|m| memory_strength(m) >= self.config().decay.retrieval_threshold);
             for memory in &mut memories {
                 match memory {
                     Memory::Episodic(ref mut e) => {
@@ -624,7 +639,7 @@ impl PerspectiveEngine {
                         e.last_accessed = Utc::now();
                         e.stability = reinforce(
                             e.stability,
-                            self.config.decay.learning_rate,
+                            self.config().decay.learning_rate,
                             e.access_count,
                         );
                     }
@@ -633,7 +648,7 @@ impl PerspectiveEngine {
                         s.last_accessed = Utc::now();
                         s.stability = reinforce(
                             s.stability,
-                            self.config.decay.learning_rate,
+                            self.config().decay.learning_rate,
                             s.access_count,
                         );
                     }
@@ -657,7 +672,18 @@ impl PerspectiveEngine {
             None,
             Some(query),
             true,
-            Some(&serde_json::json!({"query": query, "result_count": memories.len(), "budget": budget}).to_string()),
+            Some(&serde_json::json!({
+                "query": query,
+                "result_count": memories.len(),
+                "budget": budget,
+                "results": memories.iter().map(|m| {
+                    serde_json::json!({
+                        "id": m.id().to_string(),
+                        "content": m.content(),
+                        "type": m.memory_type().to_string(),
+                    })
+                }).collect::<Vec<_>>()
+            }).to_string()),
         );
 
         Ok(RecallResult {
@@ -879,20 +905,71 @@ impl PerspectiveEngine {
         }
     }
 
+    /// Get full graph data for interactive visualization (react-force-graph).
+    pub fn get_full_graph(&self) -> serde_json::Value {
+        let (nodes, edges) = match &self.graph_store {
+            Some(gs) => match gs.count_all() {
+                Ok((_, _, nodes, edges)) => (nodes, edges),
+                Err(_) => (vec![], vec![]),
+            }
+            None => (vec![], vec![]),
+        };
+
+        let viz_nodes: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|n| {
+                let (id, label, node_type, group) = match n {
+                    super::types::graph::GraphNode::MemoryRef { id, memory_type } => {
+                        (id.to_string(), format!("{:?}", memory_type), "memory", 1)
+                    }
+                    super::types::graph::GraphNode::Entity { id, name, entity_type } => {
+                        (id.to_string(), name.clone(), "entity", 2)
+                    }
+                    super::types::graph::GraphNode::Concept { id, label } => {
+                        (id.to_string(), label.clone(), "concept", 3)
+                    }
+                };
+                serde_json::json!({
+                    "id": id,
+                    "label": label,
+                    "type": node_type,
+                    "group": group,
+                })
+            })
+            .collect();
+
+        let viz_links: Vec<serde_json::Value> = edges
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "source": e.from_id.to_string(),
+                    "target": e.to_id.to_string(),
+                    "type": format!("{:?}", e.edge_type),
+                    "weight": e.weight,
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            "nodes": viz_nodes,
+            "links": viz_links,
+        })
+    }
+
     /// Get engine config for dashboard display.
     pub fn get_config_response(&self) -> ConfigResponse {
         let mut storage = HashMap::new();
         storage.insert(
             "data_dir".into(),
-            self.config.storage.data_dir.display().to_string(),
+            self.config().storage.data_dir.display().to_string(),
         );
         storage.insert(
             "embedded_qdrant".into(),
-            self.config.storage.embedded_qdrant.to_string(),
+            self.config().storage.embedded_qdrant.to_string(),
         );
 
         let mut embedding = HashMap::new();
-        match &self.config.embedding {
+        match &self.config().embedding {
             crate::config::EmbeddingConfig::Local { model } => {
                 embedding.insert("type".into(), "local".into());
                 embedding.insert("model".into(), model.clone());
@@ -908,85 +985,89 @@ impl PerspectiveEngine {
 
         let mut decay = HashMap::new();
         decay.insert(
+            "enabled".into(),
+            self.config().decay.enabled.to_string(),
+        );
+        decay.insert(
             "episodic_lambda".into(),
-            self.config.decay.episodic_lambda.to_string(),
+            self.config().decay.episodic_lambda.to_string(),
         );
         decay.insert(
             "semantic_lambda".into(),
-            self.config.decay.semantic_lambda.to_string(),
+            self.config().decay.semantic_lambda.to_string(),
         );
         decay.insert(
             "procedural_lambda".into(),
-            self.config.decay.procedural_lambda.to_string(),
+            self.config().decay.procedural_lambda.to_string(),
         );
         decay.insert(
             "learning_rate".into(),
-            self.config.decay.learning_rate.to_string(),
+            self.config().decay.learning_rate.to_string(),
         );
         decay.insert(
             "retrieval_threshold".into(),
-            self.config.decay.retrieval_threshold.to_string(),
+            self.config().decay.retrieval_threshold.to_string(),
         );
         decay.insert(
             "gc_threshold".into(),
-            self.config.decay.gc_threshold.to_string(),
+            self.config().decay.gc_threshold.to_string(),
         );
 
         let mut retrieval = HashMap::new();
         retrieval.insert(
             "default_budget".into(),
-            self.config.retrieval.default_budget.to_string(),
+            self.config().retrieval.default_budget.to_string(),
         );
         retrieval.insert(
             "vector_overfetch".into(),
-            self.config.retrieval.vector_overfetch.to_string(),
+            self.config().retrieval.vector_overfetch.to_string(),
         );
         retrieval.insert(
             "graph_hop_limit".into(),
-            self.config.retrieval.graph_hop_limit.to_string(),
+            self.config().retrieval.graph_hop_limit.to_string(),
         );
-        retrieval.insert("rrf_k".into(), self.config.retrieval.rrf_k.to_string());
+        retrieval.insert("rrf_k".into(), self.config().retrieval.rrf_k.to_string());
 
         let mut consolidation = HashMap::new();
         consolidation.insert(
             "enabled".into(),
-            self.config.consolidation.enabled.to_string(),
+            self.config().consolidation.enabled.to_string(),
         );
         consolidation.insert(
             "interval_secs".into(),
-            self.config.consolidation.interval_secs.to_string(),
+            self.config().consolidation.interval_secs.to_string(),
         );
         consolidation.insert(
             "dedup_similarity_threshold".into(),
-            self.config
+            self.config()
                 .consolidation
                 .dedup_similarity_threshold
                 .to_string(),
         );
         consolidation.insert(
             "promotion_access_count".into(),
-            self.config.consolidation.promotion_access_count.to_string(),
+            self.config().consolidation.promotion_access_count.to_string(),
         );
         consolidation.insert(
             "staleness_days".into(),
-            self.config.consolidation.staleness_days.to_string(),
+            self.config().consolidation.staleness_days.to_string(),
         );
 
         let mut extraction = HashMap::new();
-        extraction.insert("enabled".into(), self.config.extraction.enabled.to_string());
-        extraction.insert("endpoint".into(), self.config.extraction.endpoint.clone());
-        extraction.insert("model".into(), self.config.extraction.model.clone());
+        extraction.insert("enabled".into(), self.config().extraction.enabled.to_string());
+        extraction.insert("endpoint".into(), self.config().extraction.endpoint.clone());
+        extraction.insert("model".into(), self.config().extraction.model.clone());
         extraction.insert(
             "batch_size".into(),
-            self.config.extraction.batch_size.to_string(),
+            self.config().extraction.batch_size.to_string(),
         );
         extraction.insert(
             "batch_interval_secs".into(),
-            self.config.extraction.batch_interval_secs.to_string(),
+            self.config().extraction.batch_interval_secs.to_string(),
         );
         extraction.insert(
             "importance_gate".into(),
-            self.config.extraction.importance_gate.to_string(),
+            self.config().extraction.importance_gate.to_string(),
         );
 
         ConfigResponse {
@@ -997,6 +1078,75 @@ impl PerspectiveEngine {
             consolidation,
             extraction,
         }
+    }
+
+    /// Update settings from dashboard. Reads TOML, applies patch, writes back,
+    /// and updates in-memory config. Changes take effect immediately.
+    pub fn update_settings(&self, patch: &serde_json::Value) -> Result<()> {
+        // Read current config from TOML file (source of truth)
+        let config_path = {
+            let cfg = self.config.read().unwrap();
+            cfg.storage.data_dir.join("perspective.toml")
+        };
+
+        let mut current = if config_path.exists() {
+            let content = std::fs::read_to_string(&config_path)
+                .map_err(|e| PerspectiveError::Config(format!("read config: {e}")))?;
+            toml::from_str::<Config>(&content)
+                .map_err(|e| PerspectiveError::Config(format!("parse config: {e}")))?
+        } else {
+            self.config.read().unwrap().clone()
+        };
+
+        // Apply patch
+        if let Some(decay) = patch.get("decay") {
+            if let Some(v) = decay.get("enabled").and_then(|v| v.as_bool()) {
+                current.decay.enabled = v;
+            }
+            if let Some(v) = decay.get("episodic_lambda").and_then(|v| v.as_f64()) {
+                current.decay.episodic_lambda = v as f32;
+            }
+            if let Some(v) = decay.get("semantic_lambda").and_then(|v| v.as_f64()) {
+                current.decay.semantic_lambda = v as f32;
+            }
+            if let Some(v) = decay.get("procedural_lambda").and_then(|v| v.as_f64()) {
+                current.decay.procedural_lambda = v as f32;
+            }
+            if let Some(v) = decay.get("learning_rate").and_then(|v| v.as_f64()) {
+                current.decay.learning_rate = v as f32;
+            }
+            if let Some(v) = decay.get("retrieval_threshold").and_then(|v| v.as_f64()) {
+                current.decay.retrieval_threshold = v as f32;
+            }
+            if let Some(v) = decay.get("gc_threshold").and_then(|v| v.as_f64()) {
+                current.decay.gc_threshold = v as f32;
+            }
+        }
+        if let Some(extraction) = patch.get("extraction") {
+            if let Some(v) = extraction.get("enabled").and_then(|v| v.as_bool()) {
+                current.extraction.enabled = v;
+            }
+        }
+        if let Some(consolidation) = patch.get("consolidation") {
+            if let Some(v) = consolidation.get("enabled").and_then(|v| v.as_bool()) {
+                current.consolidation.enabled = v;
+            }
+        }
+
+        // Write to file
+        let toml_str = toml::to_string_pretty(&current)
+            .map_err(|e| PerspectiveError::Config(format!("serialize config: {e}")))?;
+        std::fs::write(&config_path, &toml_str)
+            .map_err(|e| PerspectiveError::Config(format!("write config: {e}")))?;
+
+        // Update in-memory config
+        {
+            let mut cfg = self.config.write().unwrap();
+            *cfg = current;
+        }
+
+        tracing::info!("settings: config updated at {}", config_path.display());
+        Ok(())
     }
 
     /// List memories from the vector store for a tenant.
@@ -1038,13 +1188,12 @@ impl PerspectiveEngine {
     /// Call this periodically (e.g., from a background thread or the extraction loop).
     /// Returns the number of facts extracted.
     pub async fn process_extraction_batch(&self) -> Result<usize> {
-        tracing::info!("extraction: processing batch");
         let pipeline = match &self.extraction_pipeline {
             Some(p) => p,
             None => return Ok(0),
         };
 
-        let items = {
+        let (items, token_count) = {
             let mut batcher = self
                 .batcher
                 .lock()
@@ -1052,12 +1201,19 @@ impl PerspectiveEngine {
             if !batcher.should_flush() {
                 return Ok(0);
             }
-            batcher.drain()
+            let tokens = batcher.current_tokens();
+            (batcher.drain(), tokens)
         };
 
         if items.is_empty() {
             return Ok(0);
         }
+
+        tracing::info!(
+            "extraction: processing batch ({} items, ~{} tokens)",
+            items.len(),
+            token_count
+        );
 
         // Extract text for the pipeline, keep tenant_ids for storing results
         let texts: Vec<&str> = items.iter().map(|(_, t)| t.as_str()).collect();
@@ -1116,7 +1272,7 @@ impl PerspectiveEngine {
     /// Runs every `batch_interval_secs` and processes buffered texts through the LLM.
     /// Returns a JoinHandle that can be used to stop the loop.
     pub fn start_extraction_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        let interval = std::time::Duration::from_secs(self.config.extraction.batch_interval_secs);
+        let interval = std::time::Duration::from_secs(self.config().extraction.batch_interval_secs);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
@@ -1130,144 +1286,187 @@ impl PerspectiveEngine {
                         tracing::warn!("Extraction loop error: {}", e);
                     }
                 }
+
+                // Check if consolidation was flagged by store()
+                if self.pending_consolidation.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::info!("consolidation: running (triggered by 100 stores)");
+                    if let Ok(tenants) = self.list_tenants().await {
+                        for tenant_id in &tenants {
+                            match self.run_consolidation(tenant_id).await {
+                                Ok(report) => {
+                                    tracing::info!(
+                                        "consolidation: {} done — duplicates={}, promotable={}, communities={}",
+                                        tenant_id,
+                                        report.duplicates_found,
+                                        report.promotable_count,
+                                        report.communities
+                                    );
+                                }
+                                Err(e) => tracing::warn!("consolidation: {} failed: {e}", tenant_id),
+                            }
+                        }
+                    }
+                }
             }
         })
     }
 
-    /// Start the background decay loop.
-    /// Runs every hour and applies Ebbinghaus decay to all memories across tenants.
-    /// Returns a JoinHandle that can be used to stop the loop.
-    pub fn start_decay_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        let interval = std::time::Duration::from_secs(3600);
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            loop {
-                ticker.tick().await;
-                if !self.config.decay.enabled {
-                    tracing::debug!("decay: disabled, skipping");
-                    continue;
-                }
-                tracing::info!("decay: loop tick");
-                match self.list_tenants().await {
-                Ok(tenants) => {
-                    tracing::debug!("decay: processing {} tenants", tenants.len());
-                    for tenant_id in &tenants {
-                        // Fetch all memories for this tenant from the vector store
-                        let dims = self.embedder.dimensions();
-                        let memories = match self.vector_store.lock() {
-                            Ok(mut vs) => match vs.search(
-                                tenant_id,
-                                vec![0.0; dims],
-                                10_000,
-                                dims,
-                            ) {
-                                Ok(results) => {
-                                    tracing::debug!("decay: vector search returned {} results for {tenant_id}", results.len());
-                                    let mut mems = Vec::new();
-                                    for sr in &results {
-                                        if let Some(payload) = &sr.payload {
-                                            let content = payload
-                                                .get("content")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("")
-                                                .to_string();
-                                            let memory_type_str = payload
-                                                .get("memory_type")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("episodic");
-                                            let mem = match memory_type_str {
-                                                "semantic" => Memory::Semantic(SemanticMemory {
-                                                    base: MemoryBase {
-                                                        id: sr.id,
-                                                        tenant_id: tenant_id.to_string(),
-                                                        content,
-                                                        embedding: None,
-                                                        tags: vec![],
-                                                        metadata: Default::default(),
-                                                        created_at: Utc::now(),
-                                                        updated_at: Utc::now(),
-                                                    },
-                                                    confidence: 0.8,
-                                                    source_ids: vec![],
-                                                    access_count: 0,
-                                                    last_accessed: Utc::now(),
-                                                    stability: 10.0,
-                                                    first_seen: Utc::now(),
-                                                    last_validated: None,
-                                                }),
-                                                "procedural" => Memory::Procedural(ProceduralMemory {
-                                                    base: MemoryBase {
-                                                        id: sr.id,
-                                                        tenant_id: tenant_id.to_string(),
-                                                        content,
-                                                        embedding: None,
-                                                        tags: vec![],
-                                                        metadata: Default::default(),
-                                                        created_at: Utc::now(),
-                                                        updated_at: Utc::now(),
-                                                    },
-                                                    code: None,
-                                                    preconditions: vec![],
-                                                    postconditions: vec![],
-                                                    success_rate: 1.0,
-                                                    access_count: 0,
-                                                    last_used: Utc::now(),
-                                                    stability: f32::INFINITY,
-                                                    version: 1,
-                                                }),
-                                                _ => Memory::Episodic(EpisodicMemory {
-                                                    base: MemoryBase {
-                                                        id: sr.id,
-                                                        tenant_id: tenant_id.to_string(),
-                                                        content,
-                                                        embedding: None,
-                                                        tags: vec![],
-                                                        metadata: Default::default(),
-                                                        created_at: Utc::now(),
-                                                        updated_at: Utc::now(),
-                                                    },
-                                                    timestamp: Utc::now(),
-                                                    context: None,
-                                                    importance: 0.5,
-                                                    access_count: 0,
-                                                    last_accessed: Utc::now(),
-                                                    stability: 1.0,
-                                                    source_session: None,
-                                                }),
-                                            };
-                                            mems.push(mem);
-                                        }
+    /// Run a single decay tick across all tenants.
+    /// Computes Ebbinghaus forgetting curve for each memory, garbage-collects
+    /// stale memories, and logs stats. Called once daily at midnight.
+    pub async fn run_decay_tick(&self) {
+        if !self.config().decay.enabled {
+            tracing::debug!("decay: disabled, skipping");
+            return;
+        }
+        tracing::info!("decay: starting daily tick");
+        let mut total_processed = 0u64;
+        let mut total_gc = 0u64;
+        match self.list_tenants().await {
+            Ok(tenants) => {
+                tracing::debug!("decay: processing {} tenants", tenants.len());
+                for tenant_id in &tenants {
+                    let dims = self.embedder.dimensions();
+                    let memories = match self.vector_store.lock() {
+                        Ok(mut vs) => match vs.search(
+                            tenant_id,
+                            vec![0.0; dims],
+                            10_000,
+                            dims,
+                        ) {
+                            Ok(results) => {
+                                tracing::debug!("decay: vector search returned {} results for {tenant_id}", results.len());
+                                let mut mems = Vec::new();
+                                for sr in &results {
+                                    if let Some(payload) = &sr.payload {
+                                        let content = payload
+                                            .get("content")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let memory_type_str = payload
+                                            .get("memory_type")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("episodic");
+                                        let mem = match memory_type_str {
+                                            "semantic" => Memory::Semantic(SemanticMemory {
+                                                base: MemoryBase {
+                                                    id: sr.id,
+                                                    tenant_id: tenant_id.to_string(),
+                                                    content,
+                                                    embedding: None,
+                                                    tags: vec![],
+                                                    metadata: Default::default(),
+                                                    created_at: Utc::now(),
+                                                    updated_at: Utc::now(),
+                                                },
+                                                confidence: 0.8,
+                                                source_ids: vec![],
+                                                access_count: 0,
+                                                last_accessed: Utc::now(),
+                                                stability: 10.0,
+                                                first_seen: Utc::now(),
+                                                last_validated: None,
+                                            }),
+                                            "procedural" => Memory::Procedural(ProceduralMemory {
+                                                base: MemoryBase {
+                                                    id: sr.id,
+                                                    tenant_id: tenant_id.to_string(),
+                                                    content,
+                                                    embedding: None,
+                                                    tags: vec![],
+                                                    metadata: Default::default(),
+                                                    created_at: Utc::now(),
+                                                    updated_at: Utc::now(),
+                                                },
+                                                code: None,
+                                                preconditions: vec![],
+                                                postconditions: vec![],
+                                                success_rate: 1.0,
+                                                access_count: 0,
+                                                last_used: Utc::now(),
+                                                stability: f32::INFINITY,
+                                                version: 1,
+                                            }),
+                                            _ => Memory::Episodic(EpisodicMemory {
+                                                base: MemoryBase {
+                                                    id: sr.id,
+                                                    tenant_id: tenant_id.to_string(),
+                                                    content,
+                                                    embedding: None,
+                                                    tags: vec![],
+                                                    metadata: Default::default(),
+                                                    created_at: Utc::now(),
+                                                    updated_at: Utc::now(),
+                                                },
+                                                timestamp: Utc::now(),
+                                                context: None,
+                                                importance: 0.5,
+                                                access_count: 0,
+                                                last_accessed: Utc::now(),
+                                                stability: 1.0,
+                                                source_session: None,
+                                            }),
+                                        };
+                                        mems.push(mem);
                                     }
-                                    Ok(mems)
                                 }
-                                Err(e) => {
-                                    tracing::warn!("decay: vector search failed for {tenant_id}: {e}");
-                                    Err(())
-                                },
-                            },
+                                Ok(mems)
+                            }
                             Err(e) => {
-                                tracing::warn!("decay: mutex poisoned for {tenant_id}: {e}");
+                                tracing::warn!("decay: vector search failed for {tenant_id}: {e}");
                                 Err(())
-                            },
-                        };
-                        if let Ok(mems) = memories {
-                            tracing::debug!("decay: fetched {} memories for {tenant_id}", mems.len());
-                            let results = crate::decay::maintenance::apply_decay_to_memories(
-                                &mems,
-                                &self.config.decay,
-                            );
-                            tracing::info!(
-                                "decay: processed {} memories for tenant {}",
-                                results.len(),
-                                tenant_id
-                            );
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("decay: mutex poisoned for {tenant_id}: {e}");
+                            Err(())
+                        },
+                    };
+                    if let Ok(mems) = memories {
+                        let count = mems.len() as u64;
+                        tracing::debug!("decay: fetched {} memories for {tenant_id}", count);
+                        let _results = crate::decay::maintenance::apply_decay_to_memories(
+                            &mems,
+                            &self.config().decay,
+                        );
+                        // Garbage-collect memories below threshold
+                        let gc_candidates = crate::decay::maintenance::get_gc_candidates(
+                            &mems,
+                            &self.config().decay,
+                        );
+                        let gc_count = gc_candidates.len() as u64;
+                        for mem in gc_candidates {
+                            let id = mem.id();
+                            if let Err(e) = self.delete_memory(tenant_id, id).await {
+                                tracing::warn!("decay: failed to delete GC candidate {id}: {e}");
+                            }
                         }
+                        tracing::info!(
+                            "decay: tenant {tenant_id} — processed {}, garbage-collected {}",
+                            count,
+                            gc_count
+                        );
+                        total_processed += count;
+                        total_gc += gc_count;
                     }
                 }
-                Err(e) => tracing::warn!("decay: failed to list tenants: {e}"),
-                }
             }
-        })
+            Err(e) => tracing::warn!("decay: failed to list tenants: {e}"),
+        }
+        tracing::info!(
+            "decay: tick complete — processed {total_processed} memories, garbage-collected {total_gc}"
+        );
+        self.monitor.record_event(
+            "decay",
+            None,
+            None,
+            true,
+            Some(&serde_json::json!({
+                "total_processed": total_processed,
+                "total_gc": total_gc,
+            }).to_string()),
+        );
     }
 
     /// Load all memories for a tenant with embeddings (for consolidation).
@@ -1379,14 +1578,14 @@ impl PerspectiveEngine {
         tracing::debug!("consolidation: loaded {} memories", memories.len());
         let mut report = ConsolidationReport::default();
 
-        if self.config.consolidation.enabled {
-            let threshold = self.config.consolidation.dedup_similarity_threshold;
+        if self.config().consolidation.enabled {
+            let threshold = self.config().consolidation.dedup_similarity_threshold;
             let duplicates = find_duplicates(&memories, threshold);
             report.duplicates_found = duplicates.len();
             tracing::debug!("consolidation: found {} duplicates", duplicates.len());
 
             let promotable =
-                find_promotable(&memories, self.config.consolidation.promotion_access_count);
+                find_promotable(&memories, self.config().consolidation.promotion_access_count);
             report.promotable_count = promotable.len();
             tracing::debug!("consolidation: {} promotable memories", promotable.len());
         }
@@ -1411,12 +1610,12 @@ impl PerspectiveEngine {
     /// Start the background consolidation loop.
     /// Runs every `interval_secs` and processes all tenants.
     pub fn start_consolidation_loop(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        let interval = std::time::Duration::from_secs(self.config.consolidation.interval_secs);
+        let interval = std::time::Duration::from_secs(self.config().consolidation.interval_secs);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
-                if !self.config.consolidation.enabled {
+                if !self.config().consolidation.enabled {
                     continue;
                 }
                 match self.list_tenants().await {
