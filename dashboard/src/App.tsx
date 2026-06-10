@@ -4,7 +4,7 @@ import Overview from './pages/Overview';
 import Processes from './pages/Processes';
 import Graph from './pages/Graph';
 import Memories from './pages/Memories';
-import Config from './pages/Config';
+import Config from './pages/Settings';
 import Logs from './pages/Logs';
 
 export default function App() {

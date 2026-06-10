@@ -69,13 +69,27 @@ export interface MemoriesResponse {
   total: number;
 }
 
-export interface ConfigResponse {
+export interface SettingsResponse {
   storage: Record<string, string>;
   embedding: Record<string, string>;
   decay: Record<string, string>;
   retrieval: Record<string, string>;
   consolidation: Record<string, string>;
   extraction: Record<string, string>;
+}
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  type: string;
+  group: number;
+}
+
+export interface GraphLink {
+  source: string;
+  target: string;
+  type: string;
+  weight: number;
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -90,10 +104,18 @@ export const api = {
     fetchJson<{ events: ActivityEvent[] }>(`/api/activity?limit=${limit}`),
   getProcesses: () => fetchJson<ProcessStatus>('/api/processes'),
   getGraph: () => fetchJson<GraphStats>('/api/graph'),
+  getFullGraph: () =>
+    fetchJson<{ nodes: GraphNode[]; links: GraphLink[] }>('/api/graph/full'),
   getMemories: (q?: string, limit = 50) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (q) params.set('q', q);
     return fetchJson<MemoriesResponse>(`/api/memories?${params}`);
   },
-  getConfig: () => fetchJson<ConfigResponse>('/api/config'),
+  getSettings: () => fetchJson<SettingsResponse>('/api/config'),
+  updateSettings: (patch: Record<string, unknown>) =>
+    fetch(`${API_BASE}/api/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).then(r => r.json()),
 };

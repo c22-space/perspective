@@ -32,6 +32,8 @@ pub struct ExtractionConfig {
     pub endpoint: String,
     pub model: String,
     pub api_key: Option<String>,
+    /// Max tokens to accumulate before flushing to LLM extraction.
+    /// Default: 4096 tokens (~16K chars of English text).
     pub batch_size: usize,
     pub batch_interval_secs: u64,
     pub importance_gate: bool,
@@ -107,7 +109,7 @@ impl Default for Config {
                 endpoint: String::new(),
                 model: "NuExtract-tiny-v1.5-Q5_K_M".into(),
                 api_key: None,
-                batch_size: 10,
+                batch_size: 4096,
                 batch_interval_secs: 30,
                 importance_gate: true,
                 model_path: "models/NuExtract-tiny-v1.5-Q5_K_M.gguf".into(),
