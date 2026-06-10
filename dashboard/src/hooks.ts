@@ -8,6 +8,15 @@ function usePolling<T>(fetcher: () => Promise<T>, intervalMs = 5000) {
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
 
+  const refreshNow = useRef(async () => {
+    try {
+      const result = await fetcherRef.current();
+      setData(result); setError(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Unknown error');
+    }
+  });
+
   useEffect(() => {
     let alive = true;
 
@@ -27,7 +36,7 @@ function usePolling<T>(fetcher: () => Promise<T>, intervalMs = 5000) {
     return () => { alive = false; clearInterval(id); };
   }, [intervalMs]);
 
-  return { data, error, loading };
+  return { data, error, loading, refresh: refreshNow.current };
 }
 
 function useOnce<T>(fetcher: () => Promise<T>) {

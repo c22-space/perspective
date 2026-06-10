@@ -378,6 +378,71 @@ async fn handle_reflect(engine: &PerspectiveEngine, body: &str) -> (String, Stri
     )
 }
 
+/// Handle a POST /api/processes/trigger-consolidation request.
+async fn handle_trigger_consolidation(engine: &PerspectiveEngine) -> (String, String) {
+    let tenants = engine.list_tenants().await.unwrap_or_default();
+    let mut reports = Vec::new();
+    for tenant_id in &tenants {
+        match engine.run_consolidation(tenant_id).await {
+            Ok(report) => {
+                reports.push(serde_json::json!({
+                    "tenant": tenant_id,
+                    "duplicates": report.duplicates_found,
+                    "promotable": report.promotable_count,
+                    "communities": report.communities,
+                }));
+            }
+            Err(e) => {
+                tracing::warn!("trigger consolidation: {tenant_id} failed: {e}");
+                reports.push(serde_json::json!({
+                    "tenant": tenant_id,
+                    "error": format!("{e}"),
+                }));
+            }
+        }
+    }
+    let resp = serde_json::json!({ "ok": true, "reports": reports });
+    let json = serde_json::to_string(&resp).unwrap_or_default();
+    (
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+        json,
+    )
+}
+
+/// Handle a POST /api/processes/trigger-extraction request.
+async fn handle_trigger_extraction(engine: &PerspectiveEngine) -> (String, String) {
+    match engine.process_extraction_batch().await {
+        Ok(count) => {
+            let resp = serde_json::json!({ "ok": true, "extracted": count });
+            let json = serde_json::to_string(&resp).unwrap_or_default();
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                json,
+            )
+        }
+        Err(e) => {
+            tracing::warn!("trigger extraction: failed: {e}");
+            let resp = serde_json::json!({ "ok": false, "error": format!("{e}") });
+            let json = serde_json::to_string(&resp).unwrap_or_default();
+            (
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+                json,
+            )
+        }
+    }
+}
+
+/// Handle a POST /api/processes/trigger-decay request.
+async fn handle_trigger_decay(engine: &PerspectiveEngine) -> (String, String) {
+    engine.run_decay_tick().await;
+    let resp = serde_json::json!({ "ok": true });
+    let json = serde_json::to_string(&resp).unwrap_or_default();
+    (
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n".into(),
+        json,
+    )
+}
+
 /// Handle a GET /api/logs request.
 /// Reads the last N lines from the perspective.log file.
 /// Supports ?limit=N (default 100) and ?filter=keyword query params.
@@ -727,6 +792,12 @@ pub fn start_background_with_config(
                         json,
                     )
                 }
+            } else if method == "POST" && path == "/api/processes/trigger-consolidation" {
+                handle_trigger_consolidation(&engine).await
+            } else if method == "POST" && path == "/api/processes/trigger-extraction" {
+                handle_trigger_extraction(&engine).await
+            } else if method == "POST" && path == "/api/processes/trigger-decay" {
+                handle_trigger_decay(&engine).await
             } else if method == "GET" && path.starts_with("/api/memories") {
                 // Parse optional ?q= and ?limit= query params
                 let (q, limit) = if let Some(qs) = path.split_once('?') {
