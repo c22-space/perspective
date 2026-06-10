@@ -206,7 +206,7 @@ export default function Overview() {
         <h3 className="text-sm font-medium text-zinc-400 mb-3">Memory Distribution</h3>
         {totalTyped === 0 ? (
           <p className="text-zinc-600 text-sm py-4 text-center">
-            {status?.total_memories ? `${status.total_memories} memories (type counts unavailable)` : 'No memories yet'}
+            {status?.total_memories ? `${status.total_memories} memories` : 'No memories yet'}
           </p>
         ) : (
           <div className="space-y-3">
