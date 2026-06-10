@@ -10,7 +10,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist',
+    outDir: '../crates/perspective-core/dashboard_dist',
     emptyOutDir: true,
   },
 });
