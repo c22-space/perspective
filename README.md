@@ -15,16 +15,18 @@ Perspective is a standalone memory engine that gives AI agents persistent, struc
 - **Procedural** — Skills and action patterns. Never decays, versioned and refined over time.
 
 ### Key Features
+
 - **Hybrid retrieval** — Vector similarity + graph traversal + entity search, fused via RRF
 - **Ebbinghaus decay** — Memories fade unless accessed. Prevents unbounded accumulation.
 - **LLM extraction** — Bundled local model (NuExtract) or external API. Smart batching and importance gating keep costs low.
 - **Consolidation** — Automatic deduplication, community detection, episodic-to-semantic promotion
 - **Multi-tenant** — Collection-based isolation for multiple agents/users
-- **Built-in HTTP server** — Auto-starts on port 2085, serves dashboard + API
+- **Built-in HTTP server** — Serves dashboard + REST API on port 2085
 
 ---
 
 ## Quick Start
+
 ### Prerequisites
 
 - Rust 2021 edition (1.75+)
@@ -35,23 +37,36 @@ No Docker. No external services. All storage is embedded.
 ### Build
 
 ```bash
-cargo build
+cargo build --release -p perspective-cli
+```
+
+### Start the Engine
+
+```bash
+# Start as daemon
+perspective start -d ~/.local/share/perspective
+
+# Check health
+curl http://127.0.0.1:2085/api/health
+
+# Store a memory
+curl -X POST http://127.0.0.1:2085/api/store \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"hermes","content":"remember this","memory_type":"episodic"}'
+
+# Recall memories
+curl -X POST http://127.0.0.1:2085/api/recall \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"hermes","query":"what should I remember","budget":5}'
+
+# Stop
+perspective stop
 ```
 
 ### Run Tests
 
 ```bash
 cargo test
-```
-
-### Start the Engine
-
-```python
-from perspective_python import PerspectiveEngine
-
-engine = PerspectiveEngine("/path/to/data")
-# HTTP server auto-starts on port 2085
-# Dashboard available at http://localhost:2085
 ```
 
 ---
@@ -65,9 +80,8 @@ perspective/
 ├── AGENTS.md                     # Agent guidelines
 ├── crates/
 │   ├── perspective-core/         # Core engine library
-│   ├── perspective-cli/       # CLI tool (init, status, config)
-│   ├── perspective-plugin/       # Hermes MemoryProvider plugin
-│   └── perspective-python/       # Python bindings
+│   ├── perspective-cli/          # CLI tool (init, status, config, start, stop)
+│   └── perspective-plugin/       # Hermes MemoryProvider plugin (Rust)
 ├── dashboard/                    # React + TypeScript dashboard
 └── tests/
     └── integration/
@@ -80,13 +94,13 @@ perspective/
 | Crate | Purpose |
 |-------|---------|
 | `perspective-core` | Core engine: types, storage, retrieval, extraction, decay, consolidation |
-|| `perspective-cli` | CLI tool (init, status, config) |
+| `perspective-cli` | CLI binary: init, status, config, start, stop |
 | `perspective-plugin` | Hermes integration via `MemoryProvider` trait |
-| `perspective-python` | Python bindings (PyO3) |
 
 ---
 
 ## Storage
+
 - **Qdrant-edge** — Embedded vector storage (no Docker required)
 - **redb** — Embedded graph store (relationships, entities, metadata)
 - **Tantivy** — BM25 full-text search
@@ -97,13 +111,13 @@ perspective/
 
 The `dashboard/` directory contains a React + TypeScript + Vite app for monitoring and exploring memory.
 
-When the engine starts, dashboard files are automatically copied to `data_dir/dashboard/` and served on port 2085.
-
 ```bash
 cd dashboard
-npm install
-npm run dev
+npm ci
+npm run build
 ```
+
+Dashboard is served automatically when the engine starts on port 2085.
 
 ---
 

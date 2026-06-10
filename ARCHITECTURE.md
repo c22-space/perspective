@@ -110,19 +110,14 @@ perspective/
 │   │
 │   ├── perspective-cli/       # CLI tool (init, status, config)
 │   │   ├── src/
-│   │   │   └── main.rs          # CLI commands only (init, status, config)
+│   │   │   └── main.rs          # CLI commands (init, status, config, start, stop)
 │   │   └── Cargo.toml
-│   │
-│   └── perspective-plugin/       # Hermes MemoryProvider plugin
+│
+│   └── perspective-plugin/       # Hermes MemoryProvider plugin (Rust)
 │       ├── src/
 │       │   ├── lib.rs
-│       │   └── provider.rs       # MemoryProvider trait impl
+│       │   └── provider.rs
 │       └── Cargo.toml
-│
-├── perspective-python/           # Python bindings (PyO3)
-│   ├── src/
-│   │   └── lib.rs
-│   └── Cargo.toml
 │
 ├── tests/
 │   ├── integration/
@@ -491,7 +486,7 @@ The engine exposes a REST API on port 2085 when running. No separate server proc
 | GET | `/*` | Dashboard static files (SPA) |
 
 ### Auto-start
-The HTTP server starts automatically when `PerspectiveEngine` is created via the Python plugin. No `perspective serve` command needed.
+The HTTP server starts when `perspective start` is run, or when the Hermes plugin creates an in-process engine. The CLI binary manages the server lifecycle.
 
 ---
 
