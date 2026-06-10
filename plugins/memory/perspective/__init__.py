@@ -95,11 +95,6 @@ class PerspectiveMemoryProvider(MemoryProvider):
         Path(data_dir).mkdir(parents=True, exist_ok=True)
 
         try:
-            dashboard_port = config.get("dashboard_port")
-            # Find dashboard_dist relative to this plugin file
-            plugin_dir = Path(__file__).parent
-            dist_dir = str(plugin_dir / "dashboard_dist")
-
             # Extraction config
             extraction_endpoint = config.get("extraction_endpoint")
             extraction_model = config.get("extraction_model")
@@ -107,8 +102,7 @@ class PerspectiveMemoryProvider(MemoryProvider):
             extraction_enabled = config.get("extraction_enabled")
 
             self._engine = PerspectiveEngine(
-                data_dir, dashboard_port, dist_dir,
-                extraction_endpoint, extraction_model,
+                data_dir, extraction_endpoint, extraction_model,
                 extraction_api_key, extraction_enabled,
             )
             self._active = True
@@ -320,11 +314,6 @@ class PerspectiveMemoryProvider(MemoryProvider):
                 "key": "budget",
                 "description": "Recall budget (max results)",
                 "default": _DEFAULT_BUDGET,
-            },
-            {
-                "key": "dashboard_port",
-                "description": "Port for the dashboard HTTP server (None = disabled)",
-                "default": None,
             },
             {
                 "key": "extraction_enabled",

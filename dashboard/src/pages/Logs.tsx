@@ -20,7 +20,12 @@ export default function Logs() {
     fetch(`/api/logs?${params}`)
       .then(r => r.json())
       .then(d => {
-        setData(d);
+        // Handle error responses (e.g. {"error": "Not found"})
+        if (d.error && !d.lines) {
+          setData({ lines: [`Error: ${d.error}`], total: 0, log_path: '' });
+        } else {
+          setData(d);
+        }
         setLoading(false);
       })
       .catch(() => setLoading(false));

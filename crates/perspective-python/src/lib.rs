@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::thread;
+use std::sync::{Arc, Once};
 
 use ::perspective_core::config::Config;
 use ::perspective_core::engine::{PerspectiveEngine as CoreEngine, StoreRequest};
@@ -8,6 +7,48 @@ use ::perspective_core::types::MemoryType;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use tokio::runtime::Runtime;
+
+/// Ensure the tracing subscriber is only initialized once per process.
+static LOGGING_INIT: Once = Once::new();
+
+/// Initialize tracing to log to both stdout and a file in data_dir.
+fn init_logging(data_dir: &str) {
+    LOGGING_INIT.call_once(|| {
+        let log_dir = std::path::PathBuf::from(data_dir);
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("perspective.log");
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .ok();
+
+        use tracing_subscriber::fmt;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let stdout_layer = fmt::layer()
+            .with_target(false)
+            .with_ansi(true);
+
+        if let Some(file) = log_file {
+            let file_layer = fmt::layer()
+                .with_target(false)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file));
+
+            let _ = tracing_subscriber::registry()
+                .with(stdout_layer)
+                .with(file_layer)
+                .try_init();
+            tracing::info!("Logging to {}", log_path.display());
+        } else {
+            let _ = tracing_subscriber::registry()
+                .with(stdout_layer)
+                .try_init();
+        }
+    });
+}
 
 /// Python-callable memory result.
 #[pyclass]
@@ -31,17 +72,14 @@ struct PerspectiveEngine {
     inner: Arc<CoreEngine>,
     runtime: Arc<Runtime>,
     _data_dir: String,
-    _dashboard_port: Option<u16>,
 }
 
 #[pymethods]
 impl PerspectiveEngine {
     #[new]
-    #[pyo3(signature = (data_dir, dashboard_port=None, dashboard_dist_dir=None, extraction_endpoint=None, extraction_model=None, extraction_api_key=None, extraction_enabled=None, graph_hop_limit=None, retrieval_budget=None))]
+    #[pyo3(signature = (data_dir, extraction_endpoint=None, extraction_model=None, extraction_api_key=None, extraction_enabled=None, graph_hop_limit=None, retrieval_budget=None))]
     fn py_new(
         data_dir: &str,
-        dashboard_port: Option<u16>,
-        dashboard_dist_dir: Option<String>,
         extraction_endpoint: Option<String>,
         extraction_model: Option<String>,
         extraction_api_key: Option<String>,
@@ -49,11 +87,11 @@ impl PerspectiveEngine {
         graph_hop_limit: Option<usize>,
         retrieval_budget: Option<usize>,
     ) -> PyResult<Self> {
+        // Initialize logging (once per process)
+        init_logging(data_dir);
+
         let mut config = Config::default();
         config.storage.data_dir = std::path::PathBuf::from(data_dir);
-        if let Some(port) = dashboard_port {
-            config.dashboard_port = Some(port);
-        }
 
         // Apply extraction overrides
         if let Some(ep) = extraction_endpoint {
@@ -91,23 +129,25 @@ impl PerspectiveEngine {
 
         let engine_arc = Arc::new(engine);
 
-        // Start dashboard HTTP server in background thread
-        if let Some(port) = config.dashboard_port {
-            let engine_clone = Arc::clone(&engine_arc);
-            let dist_path = dashboard_dist_dir.clone().unwrap_or_default();
-            thread::spawn(move || {
-                if let Err(e) = run_dashboard_server(engine_clone, &dist_path, port) {
-                    eprintln!("Dashboard server error: {e}");
-                }
+        // ── Start background HTTP server (must be within tokio runtime) ──
+        {
+            let engine_for_server = engine_arc.clone();
+            let config_for_server = config.clone();
+            runtime.spawn(async move {
+                let server_handle = ::perspective_core::server::start_background(
+                    engine_for_server,
+                    config_for_server,
+                );
+                let _ = server_handle.await;
             });
-            println!("  Dashboard:    http://127.0.0.1:{port}");
         }
+
+        tracing::info!("HTTP server running on http://127.0.0.1:2085");
 
         Ok(Self {
             inner: engine_arc,
             runtime: Arc::new(runtime),
             _data_dir: data_dir.to_string(),
-            _dashboard_port: config.dashboard_port,
         })
     }
 
@@ -288,7 +328,7 @@ impl PerspectiveEngine {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{e}")))
     }
 
-    // --- Dashboard query methods (sync, for HTTP handlers) ---
+    // --- Dashboard query methods (sync, for querying from Python) ---
 
     fn status_json(&self) -> String {
         serde_json::to_string(&self.inner.status_response()).unwrap_or_default()
@@ -314,188 +354,6 @@ impl PerspectiveEngine {
         serde_json::to_string(&self.inner.list_memories(tenant_id, query, limit))
             .unwrap_or_default()
     }
-}
-
-// ============================================================================
-// Dashboard HTTP server
-// ============================================================================
-
-/// Serve a request from the React dist directory (filesystem).
-fn serve_static(dist_dir: &std::path::Path, mut url: &str) -> Option<(Vec<u8>, &'static str)> {
-    let mime = |p: &str| -> &'static str {
-        if p.ends_with(".js") {
-            "application/javascript"
-        } else if p.ends_with(".css") {
-            "text/css"
-        } else if p.ends_with(".svg") {
-            "image/svg+xml"
-        } else if p.ends_with(".html") {
-            "text/html; charset=utf-8"
-        } else if p.ends_with(".json") {
-            "application/json"
-        } else if p.ends_with(".png") {
-            "image/png"
-        } else if p.ends_with(".woff") || p.ends_with(".woff2") {
-            "font/woff2"
-        } else {
-            "application/octet-stream"
-        }
-    };
-    // Try exact file match first
-    if url == "/" {
-        url = "/index.html"
-    }
-    let rel = url.trim_start_matches('/');
-    let file_path = dist_dir.join(rel);
-    if let Ok(data) = std::fs::read(&file_path) {
-        return Some((data, mime(rel)));
-    }
-    // SPA fallback: return index.html for non-file routes
-    let index_path = dist_dir.join("index.html");
-    if let Ok(data) = std::fs::read(&index_path) {
-        return Some((data, "text/html; charset=utf-8"));
-    }
-    None
-}
-
-/// Run the dashboard HTTP server using tiny_http.
-fn run_dashboard_server(
-    engine: Arc<CoreEngine>,
-    dist_dir_arg: &str,
-    port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let serve_dir = if !dist_dir_arg.is_empty() {
-        std::path::PathBuf::from(dist_dir_arg)
-    } else {
-        eprintln!("  Dashboard dist not provided. Dashboard disabled.");
-        return Ok(());
-    };
-
-    let addr = format!("127.0.0.1:{port}");
-    let server = tiny_http::Server::http(&addr)
-        .map_err(|e| format!("Failed to bind dashboard on {addr}: {e}"))?;
-
-    let cors_headers = [
-        "Access-Control-Allow-Origin: *",
-        "Access-Control-Allow-Methods: GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers: Content-Type",
-    ];
-
-    loop {
-        match server.recv_timeout(std::time::Duration::from_secs(1)) {
-            Ok(Some(request)) => {
-                let method = request.method().to_string();
-                let url = request.url().to_string();
-
-                // Handle CORS preflight
-                if method == "OPTIONS" {
-                    let mut resp = tiny_http::Response::from_string("").with_status_code(204);
-                    for h in &cors_headers {
-                        resp = resp.with_header(hdr(h));
-                    }
-                    let _ = request.respond(resp);
-                    continue;
-                }
-
-                // API routes -> JSON
-                let response_body: serde_json::Value = if url.starts_with("/api/") {
-                    match url.as_str() {
-                        "/api/status" => {
-                            serde_json::to_value(engine.status_response()).unwrap_or_default()
-                        }
-                        "/api/health" => serde_json::json!({"status": "healthy"}),
-                        "/api/processes" => {
-                            serde_json::to_value(engine.get_processes()).unwrap_or_default()
-                        }
-                        "/api/graph" => {
-                            serde_json::to_value(engine.get_graph_stats()).unwrap_or_default()
-                        }
-                        "/api/config" => {
-                            serde_json::to_value(engine.get_config_response()).unwrap_or_default()
-                        }
-                        u if u.starts_with("/api/activity") => {
-                            let limit = parse_qs(&url, "limit", 50usize);
-                            serde_json::to_value(engine.get_activity(limit)).unwrap_or_default()
-                        }
-                        u if u.starts_with("/api/memories") => {
-                            let q = parse_qs_str(&url, "q", "");
-                            let limit = parse_qs(&url, "limit", 50usize);
-                            serde_json::to_value(engine.list_memories("hermes", q, limit))
-                                .unwrap_or_default()
-                        }
-                        u if u.starts_with("/api/tenants") => {
-                            serde_json::json!(["hermes"]) // list_tenants is async, use hardcoded for now
-                        }
-                        _ => serde_json::json!({"error": "Not found"}),
-                    }
-                } else {
-                    // Static files
-                    if let Some((data, ct)) = serve_static(&serve_dir, &url) {
-                        let mut resp = tiny_http::Response::from_data(data)
-                            .with_header(hdr(&format!("Content-Type: {ct}")));
-                        for h in &cors_headers {
-                            resp = resp.with_header(hdr(h));
-                        }
-                        let _ = request.respond(resp);
-                        continue;
-                    } else {
-                        let resp =
-                            tiny_http::Response::from_string("Not Found").with_status_code(404);
-                        let _ = request.respond(resp);
-                        continue;
-                    }
-                };
-
-                // Send JSON response
-                let json_str = serde_json::to_string(&response_body).unwrap_or_default();
-                let mut resp = tiny_http::Response::from_string(&json_str)
-                    .with_header(hdr("Content-Type: application/json"));
-                for h in &cors_headers {
-                    resp = resp.with_header(hdr(h));
-                }
-                let _ = request.respond(resp);
-            }
-            Ok(None) => continue, // timeout
-            Err(e) => {
-                eprintln!("Dashboard server error: {e}");
-                break;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Parse a query string parameter as usize.
-fn parse_qs(url: &str, key: &str, default: usize) -> usize {
-    url.split('?')
-        .nth(1)
-        .and_then(|qs| {
-            qs.split('&')
-                .find(|p| p.starts_with(&format!("{key}=")))
-                .and_then(|p| p.split('=').nth(1))
-                .and_then(|v| v.parse().ok())
-        })
-        .unwrap_or(default)
-}
-
-/// Build a tiny_http Header from a "Name: Value" string.
-fn hdr(s: &str) -> tiny_http::Header {
-    let parts: Vec<&str> = s.splitn(2, ':').collect();
-    let name = parts[0].trim();
-    let value = if parts.len() > 1 { parts[1].trim() } else { "" };
-    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
-}
-
-/// Parse a query string parameter as &str.
-fn parse_qs_str<'a>(url: &'a str, key: &str, default: &'a str) -> &'a str {
-    url.split('?')
-        .nth(1)
-        .and_then(|qs| {
-            qs.split('&')
-                .find(|p| p.starts_with(&format!("{key}=")))
-                .and_then(|p| p.split('=').nth(1))
-        })
-        .unwrap_or(default)
 }
 
 /// Perspective memory engine Python module.

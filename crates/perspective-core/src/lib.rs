@@ -8,5 +8,7 @@ pub mod llm;
 pub mod extraction;
 pub mod monitor;
 pub mod retrieval;
+pub mod server;
+pub mod static_files;
 pub mod store;
 pub mod types;

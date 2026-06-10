@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "perspective-memory"
 version = "0.1.0"
 description = "In-process memory engine for AI agents"
-include = ["perspective_python/dashboard_dist/**/*"]
+include = []
 license = {text = "MIT"}
 requires-python = ">=3.9"
 classifiers = [
