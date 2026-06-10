@@ -455,6 +455,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Start background extraction loop (processes buffered LLM extractions)
             if config.extraction.enabled {
                 let _ = engine_arc.clone().start_extraction_loop();
+                engine_arc.extraction_loop_active.store(true, std::sync::atomic::Ordering::Relaxed);
             }
 
             // Run missed decay if server was down at midnight
@@ -497,6 +498,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         engine_clone.run_decay_tick().await;
                     }
                 });
+                engine_arc.decay_scheduler_active.store(true, std::sync::atomic::Ordering::Relaxed);
             }
 
             // Write PID file

@@ -33,6 +33,10 @@ pub struct PerspectiveEngine {
     batcher: Mutex<ExtractionBatcher>,
     stores_since_last_consolidation: std::sync::atomic::AtomicU64,
     pending_consolidation: std::sync::atomic::AtomicBool,
+    /// Whether the background extraction loop has been started.
+    pub extraction_loop_active: std::sync::atomic::AtomicBool,
+    /// Whether the background decay scheduler has been started.
+    pub decay_scheduler_active: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +115,8 @@ impl PerspectiveEngine {
             batcher: Mutex::new(batcher),
             stores_since_last_consolidation: std::sync::atomic::AtomicU64::new(0),
             pending_consolidation: std::sync::atomic::AtomicBool::new(false),
+            extraction_loop_active: std::sync::atomic::AtomicBool::new(false),
+            decay_scheduler_active: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -167,6 +173,8 @@ impl PerspectiveEngine {
             batcher: Mutex::new(batcher),
             stores_since_last_consolidation: std::sync::atomic::AtomicU64::new(0),
             pending_consolidation: std::sync::atomic::AtomicBool::new(false),
+            extraction_loop_active: std::sync::atomic::AtomicBool::new(false),
+            decay_scheduler_active: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -827,6 +835,8 @@ impl PerspectiveEngine {
             decay: self.monitor.decay_status(),
             extraction_queue: self.monitor.extraction_queue(),
             consolidation_history: self.monitor.consolidation_history(),
+            extraction_loop_active: self.extraction_loop_active.load(std::sync::atomic::Ordering::Relaxed),
+            decay_scheduler_active: self.decay_scheduler_active.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 

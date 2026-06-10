@@ -58,23 +58,28 @@ export default function Processes() {
 
         <SectionCard title="Extraction Queue">
           <div className="flex items-center gap-2 mb-3">
-            <StatusDot active={qLen > 0} />
+            <StatusDot active={data.extraction_loop_active} />
             <span className="text-sm">
-              {qLen > 0 ? `${qLen} pending` : 'Empty'}
+              {data.extraction_loop_active
+                ? (qLen > 0 ? `${qLen} pending` : 'Active')
+                : 'Inactive'}
             </span>
           </div>
-          {qLen === 0 && (
+          {qLen === 0 && data.extraction_loop_active && (
             <p className="text-zinc-600 text-xs py-4 text-center">No items in queue</p>
+          )}
+          {qLen === 0 && !data.extraction_loop_active && (
+            <p className="text-zinc-600 text-xs py-4 text-center">Extraction loop not started</p>
           )}
         </SectionCard>
 
         <SectionCard title="Decay & GC">
           <div className="flex items-center gap-2 mb-3">
-            <StatusDot active={data.decay.gc_candidates > 0} />
+            <StatusDot active={data.decay_scheduler_active} />
             <span className="text-sm">
-              {data.decay.gc_candidates > 0
-                ? `${data.decay.gc_candidates} candidates`
-                : 'No candidates'}
+              {data.decay_scheduler_active
+                ? (data.decay.gc_candidates > 0 ? `${data.decay.gc_candidates} candidates` : 'Scheduled')
+                : 'Inactive'}
             </span>
           </div>
           <KV label="GC candidates" value={data.decay.gc_candidates} />
