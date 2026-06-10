@@ -114,6 +114,10 @@ pub struct ProcessesResponse {
     pub decay: DecayStatus,
     pub extraction_queue: Vec<ExtractionItem>,
     pub consolidation_history: Vec<ConsolidationRun>,
+    /// Whether the background extraction loop is alive and polling.
+    pub extraction_loop_active: bool,
+    /// Whether the background decay scheduler is alive and waiting.
+    pub decay_scheduler_active: bool,
 }
 
 /// Activity feed response.

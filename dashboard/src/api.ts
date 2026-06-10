@@ -13,10 +13,12 @@ export interface StatusResponse {
 
 export interface ActivityEvent {
   tenant: string;
-  event_type: string;
+  operation: string;
   memory_type: string | null;
   memory_id: string | null;
   timestamp: string;
+  content: string | null;
+  success: boolean;
   details_json: string | null;
 }
 
@@ -38,6 +40,8 @@ export interface ProcessStatus {
   };
   extraction_queue: unknown[];
   consolidation_history: unknown[];
+  extraction_loop_active: boolean;
+  decay_scheduler_active: boolean;
 }
 
 export interface GraphStats {

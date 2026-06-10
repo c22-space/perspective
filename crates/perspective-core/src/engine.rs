@@ -33,6 +33,10 @@ pub struct PerspectiveEngine {
     batcher: Mutex<ExtractionBatcher>,
     stores_since_last_consolidation: std::sync::atomic::AtomicU64,
     pending_consolidation: std::sync::atomic::AtomicBool,
+    /// Whether the background extraction loop has been started.
+    pub extraction_loop_active: std::sync::atomic::AtomicBool,
+    /// Whether the background decay scheduler has been started.
+    pub decay_scheduler_active: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +115,8 @@ impl PerspectiveEngine {
             batcher: Mutex::new(batcher),
             stores_since_last_consolidation: std::sync::atomic::AtomicU64::new(0),
             pending_consolidation: std::sync::atomic::AtomicBool::new(false),
+            extraction_loop_active: std::sync::atomic::AtomicBool::new(false),
+            decay_scheduler_active: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -167,6 +173,8 @@ impl PerspectiveEngine {
             batcher: Mutex::new(batcher),
             stores_since_last_consolidation: std::sync::atomic::AtomicU64::new(0),
             pending_consolidation: std::sync::atomic::AtomicBool::new(false),
+            extraction_loop_active: std::sync::atomic::AtomicBool::new(false),
+            decay_scheduler_active: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -769,32 +777,11 @@ impl PerspectiveEngine {
         // Count from Tantivy (supports concurrent reads, no WAL lock)
         let total_memories = self.text_store.count();
 
-        // Count memory types from vector store payloads
-        let memory_types = if let Ok(mut vs) = self.vector_store.lock() {
-            let zero_vec = vec![0.0; self.embedder.dimensions()];
-            if let Ok(results) = vs.search(
-                "default",  // count across all types for default tenant
-                zero_vec,
-                total_memories as usize,
-                self.embedder.dimensions(),
-            ) {
-                let mut episodic = 0u64;
-                let mut semantic = 0u64;
-                let mut procedural = 0u64;
-                for r in &results {
-                    if let Some(payload) = &r.payload {
-                        match payload.get("memory_type").and_then(|v| v.as_str()) {
-                            Some("semantic") => semantic += 1,
-                            Some("procedural") => procedural += 1,
-                            _ => episodic += 1,
-                        }
-                    } else {
-                        episodic += 1;
-                    }
-                }
-                MemoryTypeCounts { episodic, semantic, procedural }
-            } else {
-                MemoryTypeCounts::default()
+        // Count memory types from redb graph store (MemoryRef nodes carry memory_type)
+        let memory_types = if let Some(ref gs) = self.graph_store {
+            match gs.count_memory_types() {
+                Ok((episodic, semantic, procedural)) => MemoryTypeCounts { episodic, semantic, procedural },
+                Err(_) => MemoryTypeCounts::default(),
             }
         } else {
             MemoryTypeCounts::default()
@@ -827,6 +814,8 @@ impl PerspectiveEngine {
             decay: self.monitor.decay_status(),
             extraction_queue: self.monitor.extraction_queue(),
             consolidation_history: self.monitor.consolidation_history(),
+            extraction_loop_active: self.extraction_loop_active.load(std::sync::atomic::Ordering::Relaxed),
+            decay_scheduler_active: self.decay_scheduler_active.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 

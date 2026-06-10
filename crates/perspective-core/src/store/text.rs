@@ -99,6 +99,41 @@ impl TextStore {
         searcher.num_docs()
     }
 
+    /// Count memories by type from the Tantivy index.
+    /// Returns (episodic, semantic, procedural) counts.
+    pub fn count_by_type(&self) -> (u64, u64, u64) {
+        let searcher = self.reader.searcher();
+        let total = searcher.num_docs();
+        if total == 0 {
+            return (0, 0, 0);
+        }
+        let query = tantivy::query::AllQuery;
+        let top_docs = match searcher.search(
+            &query,
+            &tantivy::collector::TopDocs::with_limit(total as usize),
+        ) {
+            Ok(docs) => docs,
+            Err(_) => return (0, 0, 0),
+        };
+        let mut episodic = 0u64;
+        let mut semantic = 0u64;
+        let mut procedural = 0u64;
+        for (_score, doc_addr) in top_docs {
+            if let Ok(doc) = searcher.doc::<tantivy::TantivyDocument>(doc_addr) {
+                let mt = doc
+                    .get_first(self.memory_type_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("episodic");
+                match mt {
+                    "semantic" => semantic += 1,
+                    "procedural" => procedural += 1,
+                    _ => episodic += 1,
+                }
+            }
+        }
+        (episodic, semantic, procedural)
+    }
+
     pub fn list_all(&self, limit: usize) -> Result<Vec<FullTextResult>> {
         let searcher = self.reader.searcher();
         let query = tantivy::query::AllQuery;

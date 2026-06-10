@@ -1,5 +1,6 @@
 use crate::error::{PerspectiveError, Result};
 use crate::types::graph::{EdgeType, GraphEdge, GraphNode};
+use crate::types::memory::MemoryType;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use redb::{Database, ReadableTable, TableDefinition};
@@ -245,6 +246,35 @@ impl GraphStore {
             return Ok(());
         }
         self.save_edge(tenant_id, edge)
+    }
+
+    /// Count memory nodes by type. Returns (episodic, semantic, procedural).
+    pub fn count_memory_types(&self) -> Result<(u64, u64, u64)> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+        let mut episodic = 0u64;
+        let mut semantic = 0u64;
+        let mut procedural = 0u64;
+        if let Ok(table) = txn.open_table(NODES_TABLE) {
+            let iter = table
+                .iter()
+                .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+            for item in iter {
+                let (_, val) = item.map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+                let node: GraphNode = bincode::deserialize(val.value())
+                    .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
+                if let GraphNode::MemoryRef { memory_type, .. } = node {
+                    match memory_type {
+                        MemoryType::Episodic => episodic += 1,
+                        MemoryType::Semantic => semantic += 1,
+                        MemoryType::Procedural => procedural += 1,
+                    }
+                }
+            }
+        }
+        Ok((episodic, semantic, procedural))
     }
 
     /// Count all nodes and edges across all tenants. Returns (node_count, edge_count, nodes, edges).

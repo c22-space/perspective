@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import { useStatus, useActivity } from '../hooks';
+import { useStatus, useActivity, useGraph } from '../hooks';
 
 function formatDuration(secs: number) {
   const h = Math.floor(secs / 3600);
@@ -30,7 +29,7 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
   );
 }
 
-function ActivityItem({ event }: { event: { timestamp: string; event_type: string; memory_type: string | null; memory_id: string | null; details_json: string | null } }) {
+function ActivityItem({ event }: { event: { timestamp: string; operation: string; memory_type: string | null; memory_id: string | null; content: string | null; details_json: string | null } }) {
   const [expanded, setExpanded] = useState(false);
   const details = (() => {
     if (!event.details_json) return null;
@@ -42,7 +41,8 @@ function ActivityItem({ event }: { event: { timestamp: string; event_type: strin
     recall: 'bg-blue-500/20 text-blue-400',
     reflect: 'bg-amber-500/20 text-amber-400',
     delete: 'bg-red-500/20 text-red-400',
-    extract: 'bg-purple-500/20 text-purple-400',
+    extraction: 'bg-purple-500/20 text-purple-400',
+    decay: 'bg-zinc-500/20 text-zinc-400',
   };
 
   return (
@@ -54,16 +54,16 @@ function ActivityItem({ event }: { event: { timestamp: string; event_type: strin
         <span className="text-xs text-zinc-600 w-16 shrink-0">{formatTime(event.timestamp)}</span>
         <span
           className={`px-2 py-0.5 rounded text-xs font-medium ${
-            eventColors[event.event_type] ?? 'bg-zinc-800 text-zinc-400'
+            eventColors[event.operation] ?? 'bg-zinc-800 text-zinc-400'
           }`}
         >
-          {event.event_type}
+          {event.operation}
         </span>
         {event.memory_type && (
           <span className="text-xs text-zinc-500">{event.memory_type}</span>
         )}
         <span className="text-zinc-400 truncate flex-1">
-          {details?.query ?? details?.content ?? details?.preview ?? event.memory_id ?? ''}
+          {details?.query ?? details?.content ?? details?.preview ?? event.content ?? event.memory_id ?? ''}
         </span>
         {details && (
           <span className="text-zinc-600 text-xs shrink-0">{expanded ? '▾' : '▸'}</span>
@@ -136,16 +136,24 @@ function ActivityItem({ event }: { event: { timestamp: string; event_type: strin
 export default function Overview() {
   const { data: status, error: statusErr, loading: statusLoading } = useStatus();
   const { data: activity, error: actErr } = useActivity(30);
+  const { data: graph } = useGraph();
+  const [activityFilter, setActivityFilter] = useState<string>('all');
 
   const typeData = status
     ? [
-        { type: 'Episodic', count: status.memory_types.episodic },
-        { type: 'Semantic', count: status.memory_types.semantic },
-        { type: 'Procedural', count: status.memory_types.procedural },
+        { type: 'Episodic', count: status.memory_types.episodic, color: '#3b82f6' },
+        { type: 'Semantic', count: status.memory_types.semantic, color: '#10b981' },
+        { type: 'Procedural', count: status.memory_types.procedural, color: '#f59e0b' },
       ]
     : [];
 
+  const totalTyped = typeData.reduce((sum, d) => sum + d.count, 0);
+
   const events = activity?.events ?? [];
+  const filteredEvents = activityFilter === 'all'
+    ? events
+    : events.filter(ev => ev.operation === activityFilter);
+  const operationTypes = [...new Set(events.map(ev => ev.operation))].sort();
 
   if (statusLoading) {
     return <div className="text-zinc-500 animate-pulse">Loading...</div>;
@@ -166,16 +174,26 @@ export default function Overview() {
       <h2 className="text-xl font-bold">Overview</h2>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-6 gap-4">
         <StatCard label="Health" value={status?.health ?? '—'} />
         <StatCard
           label="Uptime"
           value={status ? formatDuration(status.uptime_secs) : '—'}
         />
         <StatCard
-          label="Total Memories"
+          label="Memories"
           value={status?.total_memories ?? 0}
           sub={`${status?.tenant_count ?? 0} tenants`}
+        />
+        <StatCard
+          label="Nodes"
+          value={graph?.graph?.total_nodes ?? 0}
+          sub={graph ? `${graph.graph.node_types.memory_ref} mem, ${graph.graph.node_types.entity} ent` : undefined}
+        />
+        <StatCard
+          label="Edges"
+          value={graph?.graph?.total_edges ?? 0}
+          sub={graph ? `${graph.graph.edge_types.Semantic ?? 0} sem, ${graph.graph.edge_types.Entity ?? 0} ent` : undefined}
         />
         <StatCard
           label="GC Candidates"
@@ -186,39 +204,54 @@ export default function Overview() {
       {/* Memory type distribution */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
         <h3 className="text-sm font-medium text-zinc-400 mb-3">Memory Distribution</h3>
-        <ResponsiveContainer width="100%" height={220}>
-          <PieChart>
-            <Pie
-              data={typeData}
-              dataKey="count"
-              nameKey="type"
-              cx="50%"
-              cy="50%"
-              outerRadius={80}
-              innerRadius={40}
-              paddingAngle={2}
-              label={({ name, percent }: { name?: string; percent?: number }) => `${name ?? ''} ${((percent ?? 0) * 100).toFixed(0)}%`}
-            >
-              {typeData.map((_, i) => (
-                <Cell key={i} fill={['#3b82f6', '#10b981', '#f59e0b'][i % 3]} />
-              ))}
-            </Pie>
-            <Tooltip
-              contentStyle={{ background: '#18181b', border: '1px solid #27272a', borderRadius: 8, color: '#fff' }}
-            />
-          </PieChart>
-        </ResponsiveContainer>
+        {totalTyped === 0 ? (
+          <p className="text-zinc-600 text-sm py-4 text-center">
+            {status?.total_memories ? `${status.total_memories} memories` : 'No memories yet'}
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {typeData.map(d => (
+              <div key={d.type} className="flex items-center gap-3">
+                <span className="text-xs text-zinc-500 w-20 shrink-0">{d.type}</span>
+                <div className="flex-1 bg-zinc-800 rounded-full h-3 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{
+                      width: `${(d.count / totalTyped) * 100}%`,
+                      backgroundColor: d.color,
+                    }}
+                  />
+                </div>
+                <span className="text-xs text-zinc-400 w-16 text-right">{d.count} ({totalTyped > 0 ? ((d.count / totalTyped) * 100).toFixed(0) : 0}%)</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Activity feed */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-        <h3 className="text-sm font-medium text-zinc-400 mb-3">Recent Activity</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-zinc-400">Recent Activity</h3>
+          <select
+            value={activityFilter}
+            onChange={e => setActivityFilter(e.target.value)}
+            className="bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs rounded px-2 py-1 focus:outline-none focus:border-zinc-500"
+          >
+            <option value="all">All types</option>
+            {operationTypes.map(op => (
+              <option key={op} value={op}>{op}</option>
+            ))}
+          </select>
+        </div>
         {actErr && <p className="text-red-400 text-xs mb-2">{actErr}</p>}
         <div className="space-y-1 max-h-96 overflow-auto">
-          {events.length === 0 && (
-            <p className="text-zinc-600 text-sm py-4 text-center">No activity yet</p>
+          {filteredEvents.length === 0 && (
+            <p className="text-zinc-600 text-sm py-4 text-center">
+              {events.length === 0 ? 'No activity yet' : 'No matching events'}
+            </p>
           )}
-          {events.map((ev, i) => (
+          {filteredEvents.map((ev, i) => (
             <ActivityItem key={i} event={ev} />
           ))}
         </div>

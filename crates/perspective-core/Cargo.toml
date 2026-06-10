@@ -21,8 +21,10 @@ tantivy = "0.22"
 fastembed = "4"
 bincode = "1"
 rusqlite.workspace = true
-llama-cpp-2.workspace = true
-encoding_rs.workspace = true
+candle-core.workspace = true
+candle-nn.workspace = true
+candle-transformers.workspace = true
+tokenizers.workspace = true
 toml = "0.8"
 
 [dev-dependencies]
