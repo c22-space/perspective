@@ -5,8 +5,9 @@ Perspective is a graph+vector memory engine for AI agents, written in Rust.
 MIT license. Standalone engine with first-class Hermes integration.
 
 ## Architecture
-- - Workspace with 4 crates: perspective-core, perspective-cli (CLI), perspective-plugin, perspective-python
-- HTTP server lives in perspective-core, auto-starts on port 2085
+- Workspace with 3 crates: perspective-core, perspective-cli, perspective-plugin
+- CLI binary manages server lifecycle: `perspective start` / `perspective stop`
+- HTTP server on port 2085 (started by CLI or in-process by plugin)
 - Storage: Qdrant-edge (embedded vectors) + redb (graph) + Tantivy (BM25)
 - Memory types: episodic, semantic, procedural
 - LLM extraction: bundled model (NuExtract via llama-cpp-2) or external OpenAI-compatible API
@@ -15,7 +16,7 @@ MIT license. Standalone engine with first-class Hermes integration.
 ## Build Commands
 - `cargo check` — verify compilation (first run takes ~4 min, compiles llama.cpp)
 - `cargo test` — run tests
-- `cargo build` — full build
+- `cargo build --release -p perspective-cli` — build release binary
 - `cargo clippy` — lint
 
 ### Build Dependencies
@@ -37,13 +38,12 @@ MIT license. Standalone engine with first-class Hermes integration.
 ## Key Files
 - `crates/perspective-core/src/server.rs` — HTTP server (auto-starts on :2085)
 - `crates/perspective-core/src/static_files.rs` — Dashboard static file serving
-- `crates/perspective-cli/src/main.rs` — CLI only (init, status, config)
+- `crates/perspective-cli/src/main.rs` — CLI commands (init, status, config, start, stop)
 - `crates/perspective-core/src/types/` — Memory type definitions (memory.rs, graph.rs)
 - `crates/perspective-core/src/engine.rs` — Main engine struct
 - `crates/perspective-core/src/store/` — Storage layer (vector.rs, graph.rs, text.rs)
 - `crates/perspective-core/src/retrieval/` — Retrieval pipeline (vector, graph, text, entity search + fusion)
 - `crates/perspective-core/src/llm.rs` — Bundled LLM (llama-cpp-2) wrapper
 - `crates/perspective-core/src/extraction/pipeline.rs` — Extraction routing (bundled vs HTTP)
-- `crates/perspective-plugin/` — Hermes integration
-- `crates/perspective-python/` — Python bindings (PyO3)
+- `crates/perspective-plugin/` — Hermes integration (Rust plugin)
 - `ARCHITECTURE.md` — Full architecture document

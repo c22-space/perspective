@@ -3,6 +3,7 @@ use perspective_core::config::Config;
 use perspective_core::engine::PerspectiveEngine;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -53,6 +54,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Start the HTTP server (daemon mode)
+    Start {
+        /// Port to listen on (default: 2085)
+        #[arg(short, long, default_value_t = 2085)]
+        port: u16,
+
+        /// Bind address (default: 127.0.0.1)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+    },
+    /// Stop a running server
+    Stop,
 }
 
 /// Machine-readable status payload.
@@ -190,6 +203,39 @@ fn config_dir_path() -> Option<PathBuf> {
     }
 }
 
+/// PID file path for the running server.
+fn pid_file_path() -> PathBuf {
+    config_dir_path()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("perspective.pid")
+}
+
+/// Write PID file.
+fn write_pid_file(pid: u32) -> std::io::Result<()> {
+    std::fs::write(pid_file_path(), pid.to_string())
+}
+
+/// Read PID from file, returns None if not running.
+fn read_pid_file() -> Option<u32> {
+    let path = pid_file_path();
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    content.trim().parse().ok()
+}
+
+/// Remove PID file.
+fn remove_pid_file() {
+    let _ = std::fs::remove_file(pid_file_path());
+}
+
+/// Check if a process with given PID is running.
+fn is_process_running(pid: u32) -> bool {
+    // Signal 0 checks if process exists without actually signaling
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -239,19 +285,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Status { tenant, json } => {
-            let config = load_config(cli.config.as_deref());
+            // Try HTTP API first (if server is running)
+            let url = format!("http://127.0.0.1:2085/api/status");
+            if let Ok(body) = reqwest::blocking::get(&url) {
+                if body.status().is_success() {
+                    let status: serde_json::Value = body.json()?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&status)?);
+                    } else {
+                        println!();
+                        println!("  Perspective Engine Status (HTTP)");
+                        println!("  ══════════════════════════════════════");
+                        println!("  Health:    {}", status["health"]);
+                        println!("  Uptime:    {}s", status["uptime_secs"]);
+                        println!("  Memories:  {}", status["total_memories"]);
+                        println!();
+                        println!("  Memory Types");
+                        println!("  ─────────────────────────────────────");
+                        println!("  Episodic:  {}", status["memory_types"]["episodic"]);
+                        println!("  Semantic:  {}", status["memory_types"]["semantic"]);
+                        println!("  Procedural: {}", status["memory_types"]["procedural"]);
+                        println!();
+                    }
+                    return Ok(());
+                }
+            }
 
-            // Create engine to read real data from Monitor
+            // Server not running, create engine directly
+            let config = load_config(cli.config.as_deref());
             let engine = match PerspectiveEngine::new(config.clone()) {
                 Ok(e) => e,
                 Err(e) => {
                     eprintln!("Could not initialize engine: {e}");
+                    eprintln!("Is the server running? Try `perspective start`");
                     return Ok(());
                 }
             };
 
             if let Some(tenant_id) = tenant {
-                // Per-tenant status
                 let activity = engine.get_activity(50);
                 let events_for_tenant: Vec<_> = activity.events.iter().collect();
                 if json {
@@ -348,6 +419,107 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!();
             }
+        }
+
+        Commands::Start { port, host } => {
+            // Check if already running
+            if let Some(pid) = read_pid_file() {
+                if is_process_running(pid) {
+                    eprintln!("Perspective server already running (PID {pid})");
+                    eprintln!("Use `perspective stop` to stop it first.");
+                    return Ok(());
+                }
+                // Stale PID file
+                remove_pid_file();
+            }
+            let mut config = load_config(cli.config.as_deref());
+
+            // Apply data_dir override from -d flag
+            if let Some(ref data_dir) = cli.data_dir {
+                config.storage.data_dir = data_dir.clone();
+            }
+
+            let _ = std::fs::create_dir_all(&config.storage.data_dir);
+
+            // Create engine
+            let engine = match PerspectiveEngine::new(config.clone()) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("Failed to create engine: {e}");
+                    return Err(e.into());
+                }
+            };
+
+            let engine_arc = Arc::new(engine);
+
+            // Write PID file
+            let pid = std::process::id();
+            if let Err(e) = write_pid_file(pid) {
+                eprintln!("Warning: could not write PID file: {e}");
+            }
+
+            // Start HTTP server
+            let server_config = perspective_core::server::ServerConfig {
+                host: host.clone(),
+                port,
+                dashboard_dir: None,
+            };
+            let server_handle = perspective_core::server::start_background_with_config(
+                engine_arc,
+                config.clone(),
+                server_config,
+            );
+
+            println!();
+            println!("  ✓ Perspective server started");
+            println!("    PID:    {pid}");
+            println!("    Listen: {host}:{port}");
+            println!("    Data:   {}", config.storage.data_dir.display());
+            println!("    Health: http://{host}:{port}/api/health");
+            println!();
+
+            // Run forever
+            server_handle.await?;
+        }
+
+        Commands::Stop => {
+            let pid = match read_pid_file() {
+                Some(p) => p,
+                None => {
+                    eprintln!("No PID file found. Is the server running?");
+                    return Ok(());
+                }
+            };
+
+            if !is_process_running(pid) {
+                eprintln!("Server process (PID {pid}) not running. Cleaning up stale PID file.");
+                remove_pid_file();
+                return Ok(());
+            }
+
+            // Send SIGTERM
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+
+            // Wait for process to exit (up to 5 seconds)
+            for _ in 0..50 {
+                if !is_process_running(pid) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+
+            if is_process_running(pid) {
+                eprintln!("Server did not stop gracefully. Sending SIGKILL...");
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+
+            remove_pid_file();
+            println!("✓ Perspective server stopped (PID {pid})");
         }
     }
 
