@@ -1,5 +1,6 @@
 use crate::error::{PerspectiveError, Result};
 use crate::types::graph::{EdgeType, GraphEdge, GraphNode};
+use crate::types::memory::MemoryType;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use redb::{Database, ReadableTable, TableDefinition};
@@ -266,9 +267,9 @@ impl GraphStore {
                     .map_err(|e| PerspectiveError::Graph(e.to_string()))?;
                 if let GraphNode::MemoryRef { memory_type, .. } = node {
                     match memory_type {
-                        super::MemoryType::Episodic => episodic += 1,
-                        super::MemoryType::Semantic => semantic += 1,
-                        super::MemoryType::Procedural => procedural += 1,
+                        MemoryType::Episodic => episodic += 1,
+                        MemoryType::Semantic => semantic += 1,
+                        MemoryType::Procedural => procedural += 1,
                     }
                 }
             }
