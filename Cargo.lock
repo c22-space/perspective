@@ -3388,6 +3388,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "perspective-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "perspective-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "perspective-core"
 version = "0.1.0"
 dependencies = [
@@ -3436,20 +3450,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "perspective-server"
-version = "0.1.0"
-dependencies = [
- "clap",
- "perspective-core",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

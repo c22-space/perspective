@@ -5,7 +5,7 @@ Perspective is a graph+vector memory engine for AI agents, written in Rust.
 MIT license. Standalone engine with first-class Hermes integration.
 
 ## Architecture
-- - Workspace with 4 crates: perspective-core, perspective-server (CLI), perspective-plugin, perspective-python
+- - Workspace with 4 crates: perspective-core, perspective-cli (CLI), perspective-plugin, perspective-python
 - HTTP server lives in perspective-core, auto-starts on port 2085
 - Storage: Qdrant-edge (embedded vectors) + redb (graph) + Tantivy (BM25)
 - Memory types: episodic, semantic, procedural
@@ -37,7 +37,7 @@ MIT license. Standalone engine with first-class Hermes integration.
 ## Key Files
 - `crates/perspective-core/src/server.rs` — HTTP server (auto-starts on :2085)
 - `crates/perspective-core/src/static_files.rs` — Dashboard static file serving
-- `crates/perspective-server/src/main.rs` — CLI only (init, status, config)
+- `crates/perspective-cli/src/main.rs` — CLI only (init, status, config)
 - `crates/perspective-core/src/types/` — Memory type definitions (memory.rs, graph.rs)
 - `crates/perspective-core/src/engine.rs` — Main engine struct
 - `crates/perspective-core/src/store/` — Storage layer (vector.rs, graph.rs, text.rs)

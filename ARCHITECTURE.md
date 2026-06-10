@@ -108,7 +108,7 @@ perspective/
 │   │   │   └── static_files.rs   # Dashboard static file serving
 │   │   └── Cargo.toml
 │   │
-│   ├── perspective-server/       # CLI tool (init, status, config)
+│   ├── perspective-cli/       # CLI tool (init, status, config)
 │   │   ├── src/
 │   │   │   └── main.rs          # CLI commands only (init, status, config)
 │   │   └── Cargo.toml

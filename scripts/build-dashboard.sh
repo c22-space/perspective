@@ -14,16 +14,10 @@ if [ ! -d "$DIST" ]; then
   exit 1
 fi
 
-# Copy to Python package (for maturin wheel)
-PY_DIST="$ROOT/crates/perspective-python/perspective_python/dashboard_dist"
-rm -rf "$PY_DIST"
-cp -r "$DIST" "$PY_DIST"
-
-# Copy to plugin dir (for hermes plugin)
-PLUGIN_DIST="$ROOT/plugins/memory/perspective/dashboard_dist"
-rm -rf "$PLUGIN_DIST"
-cp -r "$DIST" "$PLUGIN_DIST"
+# Copy to perspective-core crate (where the HTTP server serves from)
+CRATE_DIST="$ROOT/crates/perspective-core/dashboard_dist"
+rm -rf "$CRATE_DIST"
+cp -r "$DIST" "$CRATE_DIST"
 
 echo "Dashboard built and copied to:"
-echo "  $PY_DIST"
-echo "  $PLUGIN_DIST"
+echo "  $CRATE_DIST"

@@ -507,9 +507,10 @@ pub fn start_background_with_config(
     config: Config,
     server_config: ServerConfig,
 ) -> JoinHandle<()> {
-    let dashboard_dir = server_config
-        .dashboard_dir
-        .unwrap_or_else(|| config.storage.data_dir.join("dashboard"));
+    let dashboard_dir = server_config.dashboard_dir.unwrap_or_else(|| {
+        // CI copies dashboard/dist into this crate before build
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dashboard_dist")
+    });
     let static_files = crate::static_files::StaticFiles::new(dashboard_dir);
     let log_dir = config.storage.data_dir.clone();
 

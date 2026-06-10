@@ -11,21 +11,6 @@ use tokio::runtime::Runtime;
 /// Ensure the tracing subscriber is only initialized once per process.
 static LOGGING_INIT: Once = Once::new();
 
-/// Recursively copy a directory tree from src to dst.
-fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
-        } else {
-            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
-        }
-    }
-    Ok(())
-}
-
 /// Initialize tracing to log to both stdout and a file in data_dir.
 fn init_logging(data_dir: &str) {
     LOGGING_INIT.call_once(|| {
@@ -144,36 +129,14 @@ impl PerspectiveEngine {
 
         let engine_arc = Arc::new(engine);
 
-        // ── Copy dashboard dist to data_dir/dashboard/ ───────────────────
-        let dashboard_src =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dashboard/dist");
-        let dashboard_dst = std::path::PathBuf::from(data_dir).join("dashboard");
-        if dashboard_src.exists() && !dashboard_dst.exists() {
-            if let Err(e) = copy_dir_all(&dashboard_src, &dashboard_dst) {
-                tracing::warn!("Failed to copy dashboard files: {e}");
-            } else {
-                tracing::info!(
-                    "Dashboard copied to {}",
-                    dashboard_dst.display()
-                );
-            }
-        }
-
         // ── Start background HTTP server (must be within tokio runtime) ──
         {
             let engine_for_server = engine_arc.clone();
             let config_for_server = config.clone();
-            let dashboard_for_server = dashboard_dst;
             runtime.spawn(async move {
-                let server_config = ::perspective_core::server::ServerConfig {
-                    host: "127.0.0.1".to_string(),
-                    port: 2085,
-                    dashboard_dir: Some(dashboard_for_server),
-                };
-                let server_handle = ::perspective_core::server::start_background_with_config(
+                let server_handle = ::perspective_core::server::start_background(
                     engine_for_server,
                     config_for_server,
-                    server_config,
                 );
                 let _ = server_handle.await;
             });

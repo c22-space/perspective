@@ -65,7 +65,7 @@ perspective/
 ├── AGENTS.md                     # Agent guidelines
 ├── crates/
 │   ├── perspective-core/         # Core engine library
-│   ├── perspective-server/       # CLI tool (init, status, config)
+│   ├── perspective-cli/       # CLI tool (init, status, config)
 │   ├── perspective-plugin/       # Hermes MemoryProvider plugin
 │   └── perspective-python/       # Python bindings
 ├── dashboard/                    # React + TypeScript dashboard
@@ -80,7 +80,7 @@ perspective/
 | Crate | Purpose |
 |-------|---------|
 | `perspective-core` | Core engine: types, storage, retrieval, extraction, decay, consolidation |
-|| `perspective-server` | CLI tool (init, status, config) |
+|| `perspective-cli` | CLI tool (init, status, config) |
 | `perspective-plugin` | Hermes integration via `MemoryProvider` trait |
 | `perspective-python` | Python bindings (PyO3) |
 
