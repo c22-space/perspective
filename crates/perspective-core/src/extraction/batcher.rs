@@ -53,9 +53,12 @@ impl ExtractionBatcher {
     }
 
     /// Returns `true` when the batch should be flushed.
-    /// Only flushes when estimated tokens reach max_tokens.
+    /// Flushes when estimated tokens reach max_tokens OR when the interval has elapsed.
     pub fn should_flush(&self) -> bool {
-        self.buffer_tokens >= self.max_tokens
+        if self.buffer.is_empty() {
+            return false;
+        }
+        self.buffer_tokens >= self.max_tokens || self.last_flush.elapsed() >= self.interval
     }
 
     /// Drain all buffered items. Returns Vec of (tenant_id, text).
