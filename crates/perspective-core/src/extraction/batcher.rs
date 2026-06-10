@@ -53,12 +53,12 @@ impl ExtractionBatcher {
     }
 
     /// Returns `true` when the batch should be flushed.
-    /// Flushes when estimated tokens reach max_tokens OR when the interval has elapsed.
+    /// Flushes when estimated tokens reach max_tokens.
     pub fn should_flush(&self) -> bool {
         if self.buffer.is_empty() {
             return false;
         }
-        self.buffer_tokens >= self.max_tokens || self.last_flush.elapsed() >= self.interval
+        self.buffer_tokens >= self.max_tokens
     }
 
     /// Drain all buffered items. Returns Vec of (tenant_id, text).
@@ -129,14 +129,14 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_on_interval() {
+    fn test_flush_on_token_limit() {
         let mut batcher = ExtractionBatcher::with_params(
-            1000, // high token limit
-            std::time::Duration::from_millis(0), // immediate timeout
+            1, // flush at 1 token
+            std::time::Duration::from_secs(3600),
         );
 
-        batcher.buffer("t", "hello");
-        assert!(batcher.should_flush()); // flushes due to interval
+        batcher.buffer("t", "hello"); // 5 chars = 1 token
+        assert!(batcher.should_flush());
         let items = batcher.drain();
         assert_eq!(items, vec![("t".into(), "hello".into())]);
     }
@@ -144,11 +144,11 @@ mod tests {
     #[test]
     fn test_drain_resets_state() {
         let mut batcher = ExtractionBatcher::with_params(
-            1000,
-            std::time::Duration::from_millis(0),
+            1,
+            std::time::Duration::from_secs(3600),
         );
 
-        batcher.buffer("t", "a");
+        batcher.buffer("t", "test"); // 4 chars = 1 token
         assert!(batcher.should_flush());
         let _ = batcher.drain();
         assert!(!batcher.should_flush());
