@@ -12,3 +12,6 @@ plugins/memory/perspective/dashboard_dist/
 *.pyc
 .hermes/
 crates/perspective-core/dashboard_dist
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
