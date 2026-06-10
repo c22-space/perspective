@@ -777,32 +777,11 @@ impl PerspectiveEngine {
         // Count from Tantivy (supports concurrent reads, no WAL lock)
         let total_memories = self.text_store.count();
 
-        // Count memory types from vector store payloads
-        let memory_types = if let Ok(mut vs) = self.vector_store.lock() {
-            let zero_vec = vec![0.0; self.embedder.dimensions()];
-            if let Ok(results) = vs.search(
-                "default",  // count across all types for default tenant
-                zero_vec,
-                total_memories as usize,
-                self.embedder.dimensions(),
-            ) {
-                let mut episodic = 0u64;
-                let mut semantic = 0u64;
-                let mut procedural = 0u64;
-                for r in &results {
-                    if let Some(payload) = &r.payload {
-                        match payload.get("memory_type").and_then(|v| v.as_str()) {
-                            Some("semantic") => semantic += 1,
-                            Some("procedural") => procedural += 1,
-                            _ => episodic += 1,
-                        }
-                    } else {
-                        episodic += 1;
-                    }
-                }
-                MemoryTypeCounts { episodic, semantic, procedural }
-            } else {
-                MemoryTypeCounts::default()
+        // Count memory types from redb graph store (MemoryRef nodes carry memory_type)
+        let memory_types = if let Some(ref gs) = self.graph_store {
+            match gs.count_memory_types() {
+                Ok((episodic, semantic, procedural)) => MemoryTypeCounts { episodic, semantic, procedural },
+                Err(_) => MemoryTypeCounts::default(),
             }
         } else {
             MemoryTypeCounts::default()
